@@ -12,12 +12,13 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # Register subcommands
-    from . import lookup_cmd, cmdgen_cmd, compare_cmd, recommend_cmd, trace_cmd
+    from . import lookup_cmd, cmdgen_cmd, compare_cmd, recommend_cmd, trace_cmd, archmap_cmd
     lookup_cmd.add_parser(subparsers)
     cmdgen_cmd.add_parser(subparsers)
     compare_cmd.add_parser(subparsers)
     recommend_cmd.add_parser(subparsers)
     trace_cmd.add_parser(subparsers)
+    archmap_cmd.add_parser(subparsers)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

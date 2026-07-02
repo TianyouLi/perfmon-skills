@@ -5,3 +5,7 @@ dist/
 build/
 sessions/
 .venv/
+
+# Generated arch-map diagrams (regenerated via `perfmon-skills arch-map`)
+gnr.html
+cwf.html
