@@ -9,6 +9,7 @@ Performance analysis toolkit built on [Intel perfmon](https://github.com/intel/p
 - **Cross-platform comparison** — Diff events and metrics between platform generations (e.g., ICX → SPR)
 - **TMA drill-down** — Iterative recommendation engine that automates the Top-down Microarchitecture Analysis methodology
 - **Decision tracing** — Record and visualize every decision as an inspectable DAG (Mermaid, DOT, HTML)
+- **Architecture event map** — Interactive HTML browser that classifies every event into a 4-level uarch hierarchy (core pipeline + uncore/SoC), with acronym glossary and copy-paste perf snippets. GNR and CWF today.
 
 ## Installation
 
@@ -135,6 +136,17 @@ ANALYSIS — Step 1 [COLLECTING]
 
 Repeat until the investigation reaches a leaf node with tuning guidance.
 
+### Browse the uarch event map
+
+```bash
+$ perfmon-skills arch-map --platform GNR --out gnr.html
+Wrote gnr.html (1,548,432 bytes)
+```
+
+Open the file in a browser: clickable SVG on the left (core pipeline + uncore/SoC),
+event list and full details (with acronym expansions and ready-to-run `perf stat`/`perf record`
+commands) on the right. Search box in the header finds any event by name.
+
 ### Visualize decision trace
 
 ```bash
@@ -170,13 +182,16 @@ perfmon-skills/
 ├── perfmon/                  # git submodule → intel/perfmon data
 ├── src/perfmon_tools/
 │   ├── core/                 # Platform detection, catalog, TMA tree, formula eval,
-│   │                         # perf output parsing, context budget, decision tracing
+│   │                         # perf output parsing, context budget, decision tracing,
+│   │                         # arch-map classifier, glossary
 │   ├── lookup/               # Event/metric search
 │   ├── cmdgen/               # Perf command generation
 │   ├── compare/              # Cross-platform diff
 │   ├── recommend/            # TMA drill-down engine (state machine, session mgmt,
 │   │                         # coverage tracking, tuning guidance)
-│   └── cli/                  # CLI entry points (lookup, cmdgen, compare, recommend, trace)
+│   ├── archmap/              # Uarch event-map HTML renderer + perf-example generator
+│   └── cli/                  # CLI entry points (lookup, cmdgen, compare, recommend,
+│                             # trace, arch-map)
 ├── skills/                   # Claude Code slash commands
 ├── examples/                 # Runnable demos with output
 └── tests/                    # Test suite (pytest)

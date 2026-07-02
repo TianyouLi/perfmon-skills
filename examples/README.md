@@ -13,10 +13,11 @@ pip install -e .
 
 | Example | What it shows |
 |---------|---------------|
-| `01_quick_start.sh` | All 5 CLI commands in action |
+| `01_quick_start.sh` | All CLI commands in action (lookup, cmdgen, compare, recommend, arch-map) |
 | `02_tma_drilldown.py` | Full TMA drill-down workflow step-by-step |
 | `03_trace_visualization.py` | Decision tracing DAG in all 4 output formats |
 | `04_perf_output_parsing.py` | Parsing perf stat output (text + JSON) and event name normalization |
+| `arch-map` subcommand | Interactive uarch event browser (see below) |
 
 ---
 
@@ -482,6 +483,70 @@ Detection results:
 
 Threshold: events measured < 90% of time are flagged.
 Action: reduce event count or split into multiple runs.
+```
+
+</details>
+
+---
+
+## Architecture Event Map (`arch-map`)
+
+Bucket every non-deprecated perfmon event into a 4-level uarch hierarchy
+(cell → subcomponent → sub-subcomponent → leaf) and render it as either a
+terminal summary or a self-contained interactive HTML page. Supported today:
+GNR (Granite Rapids, P-core server) and CWF (Clearwater Forest, E-core server).
+
+```bash
+# Terminal summary: how the events split across the hierarchy
+perfmon-skills arch-map --platform GNR --format text
+
+# Self-contained HTML diagram (open in any browser)
+perfmon-skills arch-map --platform GNR --out gnr.html
+perfmon-skills arch-map --platform CWF --out cwf.html
+```
+
+The HTML page has three panes:
+
+- **Left** — clickable SVG showing the core pipeline (Frontend / Backend /
+  Memory) and the uncore SoC (CHA / IMC / B2CMI / UPI / PCIe / CXL / Power).
+  Each box nests its subcomponents (e.g. `Coherence/LLC → TOR → IA → DRD`).
+- **Top-right** — events belonging to the currently-selected box.
+- **Bottom-right** — full description of the selected event, plus an
+  engineer-oriented "what this means" note, expansions of any hardware
+  acronyms in the description (TOR, RFO, STLB, …), and ready-to-run perf
+  snippets (`perf stat`, `perf record -g`, and a raw-encoding fallback).
+- **Header search box** — type any event name to jump to its component and
+  auto-select it in the details pane.
+
+Every event on GNR (1244 total) and CWF (1023 total) is classified — no
+"unclassified" bucket at any level.
+
+<details>
+<summary>Sample text output (click to expand)</summary>
+
+```
+Granite Rapids Server (GNR) — arch map
+  total=1244  mapped=1244  unmapped=0
+  core=398  uncore=846
+
+Core cells:
+       59  Frontend — Fetch / Predict
+       23  Frontend — Decode / Deliver
+       13  Bad Speculation
+       36  Backend — Rename / Alloc / Retire
+       73  Backend — Execute (EUs / Ports)
+       39  Memory — L1 / LSU / TLB
+       31  Memory — L2
+      108  Memory — L3 / Offcore
+       16  Misc / PMU
+
+Uncore cells:
+      368  Coherence / LLC
+      210  Memory Controller
+       68  UPI (socket interconnect)
+      181  PCIe / IO
+        3  CXL
+       16  Power / System
 ```
 
 </details>

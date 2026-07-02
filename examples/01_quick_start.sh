@@ -1,6 +1,6 @@
 #!/bin/bash
 # Quick-start example for perfmon-skills CLI
-# Demonstrates all 5 subcommands using SPR (Sapphire Rapids) platform.
+# Demonstrates all subcommands using SPR / GNR / CWF platform data.
 # Usage: chmod +x 01_quick_start.sh && ./01_quick_start.sh
 set -e
 
@@ -32,6 +32,21 @@ echo ""
 echo "=== 6. Guided Investigation ==="
 # Start a recommended investigation workflow
 perfmon-skills recommend start --platform SPR --cmd "sleep 2"
+
+echo ""
+echo "=== 7. Architecture Event Map (text) ==="
+# Text summary of how every non-deprecated event maps into the uarch hierarchy.
+# Currently supports GNR (Granite Rapids, P-core server) and CWF (Clearwater
+# Forest, E-core server).
+perfmon-skills arch-map --platform GNR --format text
+
+echo ""
+echo "=== 8. Generate Interactive HTML Diagram ==="
+# Self-contained HTML with a clickable uarch diagram (SVG on the left,
+# event list + full details on the right). Open in any browser.
+perfmon-skills arch-map --platform GNR --out /tmp/gnr_archmap.html
+perfmon-skills arch-map --platform CWF --out /tmp/cwf_archmap.html
+echo "Open /tmp/gnr_archmap.html or /tmp/cwf_archmap.html in a browser."
 
 echo ""
 echo "--- Next Steps ---"
