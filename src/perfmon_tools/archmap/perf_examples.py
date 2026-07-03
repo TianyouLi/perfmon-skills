@@ -117,9 +117,41 @@ def build_examples(event) -> Dict[str, str]:
     code = _int_or_none(event.event_code)
     umask = _int_or_none(event.umask)
     if code is not None and umask is not None:
-        raw = f"perf stat -e 'cpu/event=0x{code:x},umask=0x{umask:x}/' -- ./yourapp"
+        terms = [f"event=0x{code:x}", f"umask=0x{umask:x}"]
+
+        umask_ext = _int_or_none((event.raw or {}).get("UMaskExt"))
+        if umask_ext:
+            terms.append(f"umask=0x{(umask_ext << 8) | umask:x}")
+            # Overwrite the plain umask with the widened one; drop the
+            # narrow term to avoid duplication.
+            terms[1] = terms.pop()
+
+        msr_index = _int_or_none((event.raw or {}).get("MSRIndex"))
+        msr_value = _int_or_none((event.raw or {}).get("MSRValue"))
+        if msr_index and msr_value is not None:
+            # perf exposes the secondary MSR under different alias names
+            # depending on the PMU / event family. FRONTEND_RETIRED uses
+            # `frontend=`; OFFCORE_RESPONSE uses `offcore_rsp=`. Emit both
+            # candidates as a comment so the user can pick.
+            alias = "frontend" if msr_index == 0x3F7 else "config1"
+            terms.append(f"{alias}=0x{msr_value:x}")
+
+        counter_mask = _int_or_none((event.raw or {}).get("CounterMask"))
+        if counter_mask:
+            terms.append(f"cmask=0x{counter_mask:x}")
+
+        raw = f"perf stat -e 'cpu/{','.join(terms)}/' -- ./yourapp"
     else:
         raw = "# raw encoding unavailable (missing EventCode/UMask)"
+
+    if _int_or_none((event.raw or {}).get("MSRIndex")):
+        notes.append(
+            "This event shares its EventCode+UMask with sibling events. The disambiguator "
+            "is an MSR value (MSR 0x3F7 for FRONTEND_RETIRED, or an offcore-response MSR "
+            "for OCR events). perf sets this automatically when you use the symbolic name; "
+            "with a raw encoding you need the appropriate `frontend=` / `offcore_rsp=` / "
+            "`config1=` term (see the raw fallback above)."
+        )
 
     counter = (event.counter or "").strip()
     if counter and counter.lower() != "fixed":

@@ -210,6 +210,22 @@ ul.event-list li.selected { background: var(--selected); color: white; }
   text-transform: none; letter-spacing: normal;
   margin-left: 0.5rem; font-style: italic;
 }
+.msr-hint {
+  display: inline-block; color: var(--accent); cursor: help;
+  font-weight: 700; margin-left: 0.15rem;
+}
+.msr-note {
+  font-size: 0.72rem; color: var(--muted); line-height: 1.5;
+  margin-top: 0.35rem; padding: 0.35rem 0.55rem;
+  background: rgba(56, 189, 248, 0.05);
+  border-left: 3px solid var(--accent); border-radius: 3px;
+}
+.msr-note code {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.72rem;
+  background: rgba(148, 163, 184, 0.12);
+  padding: 0.05rem 0.3rem; border-radius: 3px;
+}
 .diff-summary {
   margin: 0.5rem 0 0.6rem;
   background: rgba(56, 189, 248, 0.04);
@@ -1290,10 +1306,30 @@ PAGE_JS = """
     if(ev.unit){ parts.push('<dt>Unit</dt><dd>'+escapeHtml(ev.unit)+'</dd>'); }
     if(ev.code){ parts.push('<dt>Event code</dt><dd>'+escapeHtml(ev.code)+'</dd>'); }
     if(ev.umask){ parts.push('<dt>UMask</dt><dd>'+escapeHtml(ev.umask)+'</dd>'); }
+    if(ev.umask_ext){ parts.push('<dt>UMaskExt</dt><dd>'+escapeHtml(ev.umask_ext)+'</dd>'); }
+    if(ev.msr_index){
+      parts.push('<dt>MSR</dt><dd>'+escapeHtml(ev.msr_index)+' = '+escapeHtml(ev.msr_value || '0')+
+        ' <span class="msr-hint" title="This event shares its EventCode+UMask with sibling events; the MSR value is what distinguishes them.">*</span></dd>');
+    }
+    if(ev.counter_mask){ parts.push('<dt>CounterMask</dt><dd>'+escapeHtml(ev.counter_mask)+'</dd>'); }
+    if(ev.offcore){ parts.push('<dt>Offcore</dt><dd>'+escapeHtml(ev.offcore)+'</dd>'); }
     if(ev.counter){ parts.push('<dt>Counter</dt><dd>'+escapeHtml(ev.counter)+'</dd>'); }
     if(ev.precise && ev.precise !== '0'){ parts.push('<dt>PEBS</dt><dd>'+escapeHtml(ev.precise)+'</dd>'); }
     if(ev.sample){ parts.push('<dt>SampleAfter</dt><dd>'+escapeHtml(ev.sample)+'</dd>'); }
     parts.push('</dl>');
+    // When an event carries an MSR/UMaskExt disambiguator, add a small
+    // explanatory line — otherwise sibling events like FRONTEND_RETIRED.*
+    // look encoding-identical in the detail pane.
+    if(ev.msr_index || ev.umask_ext){
+      parts.push('<div class="msr-note">' +
+        (ev.msr_index
+          ? 'This event shares its <code>EventCode</code> and <code>UMask</code> with sibling events; ' +
+            'the MSR (<code>' + escapeHtml(ev.msr_index) + '</code>) selects the specific sub-event via ' +
+            '<code>MSRValue = ' + escapeHtml(ev.msr_value || '0') + '</code>.'
+          : 'This event uses <code>UMaskExt</code> in addition to <code>UMask</code> — the extension bits ' +
+            'form the full unit-mask register value.') +
+        '</div>');
+    }
 
     if(ev.note){
       parts.push('<div class="detail-section">');
@@ -3224,6 +3260,18 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None,
                 (ev.brief_description or "") + " " + (ev.public_description or "")
             )
             examples = build_examples(ev)
+            # Expose secondary programming fields (MSR / Offcore / UMaskExt /
+            # CounterMask) when they carry a non-trivial value. On events like
+            # FRONTEND_RETIRED.* these are what distinguishes otherwise-
+            # identical (EventCode, UMask) encodings.
+            def _nz(v):
+                s = str(v or "").strip()
+                return s and s not in ("0", "0x0", "0x00", "0x000")
+            msr_index = ev.raw.get("MSRIndex") or ""
+            msr_value = ev.raw.get("MSRValue") or ""
+            umask_ext = ev.raw.get("UMaskExt") or ""
+            counter_mask = ev.raw.get("CounterMask") or ""
+            offcore = ev.raw.get("Offcore") or ""
             events[ev.name] = {
                 "name": ev.name,
                 "brief": ev.brief_description,
@@ -3231,6 +3279,11 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None,
                 "unit": ev.raw.get("Unit") or "",
                 "code": ev.event_code,
                 "umask": ev.umask,
+                "umask_ext": umask_ext if _nz(umask_ext) else "",
+                "msr_index": msr_index if _nz(msr_index) else "",
+                "msr_value": msr_value if _nz(msr_value) else "",
+                "counter_mask": counter_mask if _nz(counter_mask) else "",
+                "offcore": offcore if _nz(offcore) else "",
                 "counter": ev.counter,
                 "precise": ev.precise,
                 "sample": ev.sample_after_value,
