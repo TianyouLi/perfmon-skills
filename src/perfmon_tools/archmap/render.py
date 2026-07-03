@@ -210,6 +210,32 @@ ul.event-list li.selected { background: var(--selected); color: white; }
   text-transform: none; letter-spacing: normal;
   margin-left: 0.5rem; font-style: italic;
 }
+.diff-summary {
+  margin: 0.5rem 0 0.6rem;
+  background: rgba(56, 189, 248, 0.04);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 0.5rem 0.7rem 0.5rem 0.55rem;
+}
+.diff-summary-hdr {
+  font-size: 0.68rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  margin-bottom: 0.35rem;
+}
+.diff-summary ul { list-style: none; margin: 0; padding: 0; }
+.diff-summary li {
+  font-size: 0.78rem; color: var(--ink); line-height: 1.45;
+  padding: 0.2rem 0.35rem 0.2rem 0.55rem;
+  border-left: 3px solid var(--accent);
+  margin: 0.2rem 0;
+  border-radius: 2px;
+}
+.diff-summary li b { font-weight: 600; }
+.diff-summary li code {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.72rem;
+  background: rgba(148,163,184,0.12);
+  padding: 0.05rem 0.3rem; border-radius: 3px;
+}
 .primary-badge {
   display: inline-block; margin-left: 0.3rem;
   background: var(--accent); color: #0f172a;
@@ -990,6 +1016,79 @@ PAGE_JS = """
     });
   }
 
+  function buildMetricDiffSummary(m, st){
+    // Produce a short bullet list summarizing what changed for this metric
+    // vs the baseline. Only rendered when compareOn && the metric has some
+    // diff signal (own status, or subtree activity for containers).
+    if(!compareOn || !ARCH.diff) return '';
+    var bullets = [];
+
+    if(st === 'new'){
+      bullets.push({tone: 'new', text:
+        '<b>New in '+escapeHtml(ARCH.metrics_short_platform || 'this platform')+'</b> — not defined in '+
+        escapeHtml(ARCH.diff.baseline)+'.'});
+    } else if(st === 'changed'){
+      var info = (ARCH.diff.metrics_changes || {})[m.name] || {};
+      // Feeder-event churn
+      var changedFeeders = m.events.filter(function(en){ return diffStatusForEvent(en) === 'changed'; });
+      var newFeeders = m.events.filter(function(en){ return diffStatusForEvent(en) === 'new'; });
+      if(changedFeeders.length){
+        bullets.push({tone: 'chg', text:
+          '<b>'+changedFeeders.length+' feeder event'+(changedFeeders.length===1?'':'s')+' changed encoding</b> ' +
+          '(highlighted below).'});
+      }
+      if(newFeeders.length){
+        bullets.push({tone: 'new', text:
+          '<b>'+newFeeders.length+' feeder event'+(newFeeders.length===1?'':'s')+' new</b> since '+escapeHtml(ARCH.diff.baseline)+'.'});
+      }
+      if(info.events_added && info.events_added.length){
+        bullets.push({tone: 'new', text:
+          '<b>Formula references '+info.events_added.length+' new event'+
+          (info.events_added.length===1?'':'s')+'</b>: <code>'+
+          info.events_added.slice(0,3).map(escapeHtml).join(', </code><code>')+'</code>'+
+          (info.events_added.length>3?' <span style="color:var(--muted)">(+'+(info.events_added.length-3)+' more)</span>':'')+
+          '.'});
+      }
+      if(info.events_removed && info.events_removed.length){
+        bullets.push({tone: 'rem', text:
+          '<b>Formula no longer references '+info.events_removed.length+' event'+
+          (info.events_removed.length===1?'':'s')+'</b>: <code>'+
+          info.events_removed.slice(0,3).map(escapeHtml).join(', </code><code>')+'</code>'+
+          (info.events_removed.length>3?' <span style="color:var(--muted)">(+'+(info.events_removed.length-3)+' more)</span>':'')+
+          '.'});
+      }
+      if(info.formula_current && info.formula_baseline &&
+         info.formula_current !== info.formula_baseline){
+        bullets.push({tone: 'chg', text:
+          '<b>Formula was rewritten</b> (see <em>Diff vs '+
+          escapeHtml(ARCH.diff.baseline)+'</em> below for old/new side-by-side).'});
+      }
+      if(info.level_current !== undefined && info.level_baseline !== undefined &&
+         info.level_current !== info.level_baseline){
+        bullets.push({tone: 'chg', text:
+          '<b>TMA level changed</b>: L'+info.level_baseline+' → L'+info.level_current+'.'});
+      }
+      // Fallback if nothing above matched — the metric was flagged 'changed'
+      // by _metric_signature but our per-field detail didn't catch the reason.
+      if(bullets.length === 0){
+        bullets.push({tone: 'chg', text:
+          'This metric differs from '+escapeHtml(ARCH.diff.baseline)+' in a way not captured here — '+
+          'see <em>Diff vs '+escapeHtml(ARCH.diff.baseline)+'</em> below.'});
+      }
+    }
+
+    if(bullets.length === 0) return '';
+    var toneColour = {new: 'var(--mapped)', chg: '#fbbf24', rem: 'var(--unmapped)'};
+    var html = '<div class="diff-summary">' +
+      '<div class="diff-summary-hdr">What changed vs '+escapeHtml(ARCH.diff.baseline)+'</div>' +
+      '<ul>' +
+      bullets.map(function(b){
+        return '<li style="border-color:'+toneColour[b.tone]+';">'+b.text+'</li>';
+      }).join('') +
+      '</ul></div>';
+    return html;
+  }
+
   function renderMetricFeederList(pane, name){
     var m = ARCH.metrics[name];
     if(!m){ pane.innerHTML = '<div class="empty">Unknown metric.</div>'; return; }
@@ -1000,19 +1099,9 @@ PAGE_JS = """
     if(m.category) pathBits.push(m.category);
     if(m.parent) pathBits.push(m.parent);
     if(pathBits.length) parts.push('<div class="path">'+escapeHtml(pathBits.join(' › '))+'</div>');
-    // When the metric itself is "changed" but its feeder events are all
-    // unchanged, spell out that the change is in the formula/level, not
-    // the feeders (otherwise it looks like nothing changed).
-    if(compareOn && st === 'changed'){
-      var anyChangedFeeder = m.events.some(function(en){
-        var es = diffStatusForEvent(en);
-        return es === 'changed' || es === 'new';
-      });
-      if(!anyChangedFeeder){
-        parts.push('<div style="font-size:0.75rem;color:var(--muted);margin:0.3rem 0 0.5rem;background:rgba(251,191,36,0.08);border-left:3px solid #fbbf24;padding:0.35rem 0.55rem;border-radius:4px;">'+
-          '<b style="color:#fbbf24;">This metric definition changed</b> — its feeder events are unchanged, but the formula, event list, or level was revised vs the baseline. See <em>Diff vs baseline</em> below.</div>');
-      }
-    }
+    // Diff summary — bullets describing what changed vs the baseline.
+    var summary = buildMetricDiffSummary(m, st);
+    if(summary) parts.push(summary);
     parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
     // Detect the "primary" feeder — a pseudo-event whose name pattern matches
     // the metric (e.g. Frontend_Bound ↔ PERF_METRICS.FRONTEND_BOUND). This
