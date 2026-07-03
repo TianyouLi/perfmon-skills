@@ -52,7 +52,7 @@ def _resolve_platform_by_shortname(shortname: str):
 def run(args):
     from ..core.catalog import PlatformCatalog
     from ..core.arch_map import build_arch_map
-    from ..archmap.render import render_page
+    from ..archmap.render import render_page, PREDECESSOR
 
     pinfo = _resolve_platform_by_shortname(args.platform)
     catalog = PlatformCatalog(pinfo)
@@ -62,10 +62,23 @@ def run(args):
         _print_text(arch_map, pinfo.name)
         return
 
+    # Load the same-core-type predecessor for the compare-against-baseline
+    # feature. Failure is non-fatal — the page just renders without the diff.
+    baseline_catalog = None
+    baseline_short = PREDECESSOR.get(args.platform)
+    if baseline_short:
+        try:
+            baseline_pinfo = _resolve_platform_by_shortname(baseline_short)
+            baseline_catalog = PlatformCatalog(baseline_pinfo)
+        except Exception as exc:
+            print(f"warning: couldn't load baseline {baseline_short}: {exc}",
+                  file=sys.stderr)
+
     html = render_page(
         arch_map,
         platform_display=f"{pinfo.name} ({pinfo.shortname})",
         catalog=catalog,
+        baseline_catalog=baseline_catalog,
     )
     if args.out == "-":
         sys.stdout.write(html)

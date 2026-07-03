@@ -331,6 +331,72 @@ ul.event-list li.selected { background: var(--selected); color: white; }
 }
 .tab.active .badge { background: var(--accent); color: #0f172a; }
 
+.compare-toggle-wrap { margin-left: auto; display: flex; align-items: center; }
+.compare-toggle {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.35rem 0.7rem; font-size: 0.78rem;
+  color: var(--muted); cursor: pointer;
+}
+.compare-toggle input { accent-color: var(--accent); cursor: pointer; }
+.compare-toggle:hover { color: var(--ink); }
+.compare-toggle #compare-baseline { color: var(--ink); font-weight: 600; }
+.compare-toggle .help-tip { margin-left: 0.15rem; }
+
+.compare-strip {
+  background: rgba(56, 189, 248, 0.06);
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 1.5rem;
+  font-size: 0.8rem;
+}
+.cs-header { display: flex; align-items: baseline; gap: 1rem; }
+.cs-header b { color: var(--accent); }
+.cs-counts { color: var(--muted); font-size: 0.75rem; }
+.cs-counts .cs-new { color: var(--mapped); }
+.cs-counts .cs-changed { color: #fbbf24; }
+.cs-counts .cs-removed { color: var(--unmapped); }
+.cs-cells {
+  display: flex; flex-wrap: wrap; gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+.cs-cell {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem; color: var(--muted);
+}
+.cs-cell b { color: var(--ink); font-weight: 600; }
+.cs-cell .cs-n { color: var(--mapped); }
+.cs-cell .cs-c { color: #fbbf24; }
+.cs-cell .cs-r { color: var(--unmapped); }
+
+/* Status dots — used in the tooltip legend and event lists */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 1px; vertical-align: middle; }
+.dot-new { background: var(--mapped); }
+.dot-changed { background: #fbbf24; }
+.dot-removed { background: var(--unmapped); }
+
+/* Diff-mode badges (added when body has class="cmp-on") */
+body.cmp-on ul.event-list li[data-status="new"] { border-left: 3px solid var(--mapped); padding-left: 0.35rem; }
+body.cmp-on ul.event-list li[data-status="changed"] { border-left: 3px solid #fbbf24; padding-left: 0.35rem; }
+body.cmp-on ul.metric-list li[data-status="new"] { border-left: 3px solid var(--mapped); padding-left: 0.35rem; }
+body.cmp-on ul.metric-list li[data-status="changed"] { border-left: 3px solid #fbbf24; padding-left: 0.35rem; }
+
+body.cmp-on [data-metric][data-status="new"] > rect.cell-frame { stroke: var(--mapped); }
+body.cmp-on [data-metric][data-status="changed"] > rect.cell-frame { stroke: #fbbf24; }
+
+.status-badge {
+  display: inline-block; margin-left: 0.35rem;
+  padding: 0.02rem 0.35rem; border-radius: 8px;
+  font-size: 0.6rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+.status-badge.new { background: var(--mapped); color: #0f172a; }
+.status-badge.changed { background: #fbbf24; color: #0f172a; }
+.status-badge.removed { background: var(--unmapped); color: #0f172a; }
+
+/* "Removed since baseline" section in each tab's sidebar */
+.removed-list li { color: var(--muted); text-decoration: line-through; }
+
 .view { display: none; }
 .view.active { display: block; }
 
@@ -529,6 +595,155 @@ PAGE_JS = """
     });
   }
 
+  // -------- Compare-against-baseline --------
+  // ARCH.diff (may be null) supplies per-name status maps + removed sets +
+  // per-cell rollups. When compareOn is true, we tag list items and SVG
+  // nodes with data-status="new" | "changed" so CSS colours them.
+  var compareOn = false;
+
+  function diffStatusForEvent(name){
+    if(!ARCH.diff) return null;
+    return ARCH.diff.events_status[name] || null;
+  }
+  function diffStatusForMetric(name){
+    if(!ARCH.diff) return null;
+    return ARCH.diff.metrics_status[name] || null;
+  }
+
+  function statusBadgeHtml(status){
+    if(!compareOn || !status || status === 'same') return '';
+    if(status === 'new') return ' <span class="status-badge new">new</span>';
+    if(status === 'changed') return ' <span class="status-badge changed">changed</span>';
+    return '';
+  }
+
+  function statusAttr(status){
+    // Only decorate 'new' and 'changed' — leave unchanged items alone so
+    // the diff highlights don't drown out the normal display.
+    if(!compareOn || !status || status === 'same') return '';
+    return ' data-status="'+status+'"';
+  }
+
+  function initCompareToggle(){
+    var wrap = q('#compare-toggle-label');
+    if(!ARCH.diff){ wrap.style.display = 'none'; return; }
+    q('#compare-baseline').textContent = ARCH.diff.baseline_name || ARCH.diff.baseline;
+    wrap.style.display = 'inline-flex';
+    q('#compare-toggle').addEventListener('change', function(e){
+      compareOn = e.target.checked;
+      document.body.classList.toggle('cmp-on', compareOn);
+      q('#compare-strip').style.display = compareOn ? 'block' : 'none';
+      if(compareOn){ renderCompareStrip(); applyStatusToDom(); }
+      // Repaint lists + removed sections so state matches the toggle.
+      renderList();
+      renderMetricsSidebar();
+      renderTmaTree();
+      renderRemovedSections();
+    });
+  }
+
+  function renderCompareStrip(){
+    if(!ARCH.diff) return;
+    var d = ARCH.diff;
+    var e = d.counts.events, m = d.counts.metrics;
+    q('#cs-baseline').textContent = d.baseline_name || d.baseline;
+
+    // We only show *real* differences. Renames and denser-variant churn
+    // are filtered out (see UNIT_RENAMES + bucketing in Python).
+    var newTip = '';
+    if(e.new_renamed > 0){
+      newTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
+        '<b>' + e.new_renamed + ' events</b> that would otherwise look "new" ' +
+        'are renamed baseline events (unit renamed, same conceptual event).' +
+        ' They are shown as unchanged.</span></span>';
+    }
+    var removedTip = '';
+    var hidden = (e.removed_renamed || 0) + (e.removed_unit_retired || 0) +
+                 (e.removed_denser_variants || 0);
+    if(hidden > 0){
+      removedTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
+        'Additionally, <b>' + hidden + ' events</b> present on the baseline ' +
+        'do not appear on this platform, but are<br>' +
+        '&nbsp;• ' + (e.removed_renamed || 0) + ' events under a renamed unit ' +
+        '(same event, e.g. M2M→B2CMI)<br>' +
+        '&nbsp;• ' + (e.removed_unit_retired || 0) + ' events in units that were retired ' +
+        '(e.g. HBM controllers)<br>' +
+        '&nbsp;• ' + (e.removed_denser_variants || 0) + ' denser baseline variants ' +
+        '(per-slice variants the current release consolidates).<br>' +
+        'These are filtered out to keep the highlight focused on real changes.' +
+        '</span></span>';
+    }
+    q('#cs-counts').innerHTML =
+      'Events: <span class="cs-new">+'+e.new+'</span>' + newTip + ' ' +
+      '<span class="cs-changed">~'+e.changed+'</span> ' +
+      '<span class="cs-removed">-'+e.removed_genuinely_gone+'</span>' + removedTip +
+      '  Metrics: <span class="cs-new">+'+m.new+'</span> ' +
+      '<span class="cs-changed">~'+m.changed+'</span> ' +
+      '<span class="cs-removed">-'+m.removed+'</span>';
+    var host = q('#cs-cells');
+    var cells = d.cell_rollup || {};
+    // Show only cells that actually changed something
+    var entries = Object.keys(cells).map(function(cid){
+      var r = cells[cid];
+      return {id: cid, r: r, activity: r.new + r.changed + r.removed};
+    }).filter(function(x){ return x.activity > 0; })
+      .sort(function(a,b){ return b.activity - a.activity; });
+    host.innerHTML = entries.map(function(x){
+      var name = (ARCH.cells[x.id] && ARCH.cells[x.id].title) || x.id;
+      return '<span class="cs-cell"><b>'+escapeHtml(name)+'</b> ' +
+        (x.r.new ? '<span class="cs-n">+'+x.r.new+'</span> ' : '') +
+        (x.r.changed ? '<span class="cs-c">~'+x.r.changed+'</span> ' : '') +
+        (x.r.removed ? '<span class="cs-r">-'+x.r.removed+'</span>' : '') +
+        '</span>';
+    }).join('');
+  }
+
+  function applyStatusToDom(){
+    // For the events uarch SVG — no per-event nodes exist there (events are
+    // aggregated into cells), so nothing to decorate. The uarch cells
+    // themselves get a subtle border colour if their rollup contains new
+    // events, but that's optional; skip for now to keep the SVG clean.
+    // TMA nodes and lists get repainted on renderTmaTree() / renderList().
+  }
+
+  function renderRemovedSections(){
+    if(!ARCH.diff) return;
+    // Events tab: "Removed since baseline"
+    var block = q('#removed-events-block');
+    var list = q('#removed-events-list');
+    var count = q('#removed-events-count');
+    var evGone = ARCH.diff.events_removed_genuine || [];
+    if(evGone.length){
+      count.textContent = evGone.length;
+      list.innerHTML = evGone.map(function(name){
+        return '<li data-metric="__removed-ev__" title="'+escapeHtml(name)+'">'+
+          escapeHtml(name)+' <span class="status-badge removed">removed</span></li>';
+      }).join('');
+      block.style.display = compareOn ? '' : 'none';
+    } else {
+      block.style.display = 'none';
+    }
+    // Metrics tab: "Removed since baseline" — attach into #view-metrics.
+    var host = q('#view-metrics');
+    var existing = q('#removed-metrics-block');
+    if(existing) existing.remove();
+    var mGone = ARCH.diff.metrics_removed || [];
+    if(mGone.length){
+      var det = document.createElement('details');
+      det.className = 'subblock';
+      det.id = 'removed-metrics-block';
+      det.style.display = compareOn ? '' : 'none';
+      det.innerHTML = '<summary>Removed since '+escapeHtml(ARCH.diff.baseline)+
+        ' <span class="badge">'+mGone.length+'</span></summary>' +
+        '<ul class="metric-list removed-list">' +
+        mGone.map(function(name){
+          return '<li title="'+escapeHtml(name)+'">'+escapeHtml(name)+
+            ' <span class="status-badge removed">removed</span></li>';
+        }).join('') +
+        '</ul>';
+      host.appendChild(det);
+    }
+  }
   // -------- Events tab: uarch selection --------
   function selectPath(pathStr){
     state.events.path = pathStr;
@@ -565,7 +780,9 @@ PAGE_JS = """
     if(kids.length === 0){
       parts.push('<ul class="event-list">');
       (node.events || []).forEach(function(name){
-        parts.push('<li data-ev="'+encodeURIComponent(name)+'">'+escapeHtml(name)+'</li>');
+        var status = diffStatusForEvent(name);
+        parts.push('<li data-ev="'+encodeURIComponent(name)+'"'+statusAttr(status)+'>'+
+          escapeHtml(name)+statusBadgeHtml(status)+'</li>');
       });
       parts.push('</ul>');
       return parts.join('');
@@ -636,10 +853,12 @@ PAGE_JS = """
     var primary = primaryFeederFor(m.name, m.events);
     parts.push('<ul class="event-list">');
     m.events.forEach(function(ename){
-      var badge = (ename === primary)
-        ? ' <span class="primary-badge">primary</span>'
-        : '';
-      parts.push('<li data-ev="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+badge+'</li>');
+      var badges = '';
+      if(ename === primary) badges += ' <span class="primary-badge">primary</span>';
+      var status = diffStatusForEvent(ename);
+      badges += statusBadgeHtml(status);
+      parts.push('<li data-ev="'+encodeURIComponent(ename)+'"'+statusAttr(status)+'>'+
+        escapeHtml(ename)+badges+'</li>');
     });
     parts.push('</ul>');
     pane.innerHTML = parts.join('');
@@ -877,6 +1096,19 @@ PAGE_JS = """
       parts.push('</div>');
     }
 
+    // Diff-vs-baseline section (only visible when compare mode is on).
+    var evStatus = diffStatusForEvent(ev.name);
+    if(compareOn && evStatus && evStatus !== 'same'){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>Diff vs '+escapeHtml((ARCH.diff && ARCH.diff.baseline) || '?')+'</h4>');
+      if(evStatus === 'new'){
+        parts.push('<div class="note">New in this platform — this event does not exist in the predecessor.</div>');
+      } else if(evStatus === 'changed'){
+        parts.push('<div class="note">Encoding differs from the predecessor (EventCode / UMask / Counter). See <code>perfmon-skills compare</code> for a field-level diff.</div>');
+      }
+      parts.push('</div>');
+    }
+
     parts.push('</div>');
     pane.innerHTML = parts.join('');
     wireDetailCopy();
@@ -918,8 +1150,11 @@ PAGE_JS = """
       parts.push('<div class="feeders">');
       m.events.forEach(function(ename){
         var cls = (ename === primary) ? 'feeder primary' : 'feeder';
-        var badge = (ename === primary) ? ' <span class="primary-badge">primary</span>' : '';
-        parts.push('<span class="'+cls+'" data-jump-event="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+badge+'</span>');
+        var badges = '';
+        if(ename === primary) badges += ' <span class="primary-badge">primary</span>';
+        var st = diffStatusForEvent(ename);
+        badges += statusBadgeHtml(st);
+        parts.push('<span class="'+cls+'" data-jump-event="'+encodeURIComponent(ename)+'"'+statusAttr(st)+'>'+escapeHtml(ename)+badges+'</span>');
       });
       parts.push('</div>');
       if(primary){
@@ -938,6 +1173,18 @@ PAGE_JS = """
       if(m.count_domain){ parts.push('<dt>Count domain</dt><dd class="desc">'+escapeHtml(m.count_domain)+'</dd>'); }
       if(m.legacy){ parts.push('<dt>Legacy name</dt><dd>'+escapeHtml(m.legacy)+'</dd>'); }
       parts.push('</dl></div>');
+    }
+
+    var mStatus = diffStatusForMetric(m.name);
+    if(compareOn && mStatus && mStatus !== 'same'){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>Diff vs '+escapeHtml((ARCH.diff && ARCH.diff.baseline) || '?')+'</h4>');
+      if(mStatus === 'new'){
+        parts.push('<div class="note">New metric on this platform — the predecessor did not define it.</div>');
+      } else if(mStatus === 'changed'){
+        parts.push('<div class="note">Formula, feeder events, or level differs from the predecessor. See <code>perfmon-skills compare --type metrics</code> for a full field diff.</div>');
+      }
+      parts.push('</div>');
     }
 
     parts.push('</div>');
@@ -1200,7 +1447,8 @@ PAGE_JS = """
       var label = tmaShort(node.name, 15);
       var lvlBits = 'L' + node.level;
       if(hasThr) lvlBits += ' ⚑';
-      parts.push('<g class="'+cls.join(' ')+'" data-metric="'+tmaEscape(node.name)+'">');
+      var st = diffStatusForMetric(node.name);
+      parts.push('<g class="'+cls.join(' ')+'" data-metric="'+tmaEscape(node.name)+'"'+statusAttr(st)+'>');
       parts.push('<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+TMA_CFG.NODE_H+'" rx="4"/>');
       parts.push('<text class="title" x="'+r.cx+'" y="'+(y + 14)+'" text-anchor="middle">'+tmaEscape(label)+'</text>');
       parts.push('<text class="lvl" x="'+r.cx+'" y="'+(y + 24)+'" text-anchor="middle">'+tmaEscape(lvlBits)+'</text>');
@@ -1293,7 +1541,8 @@ PAGE_JS = """
     if(ARCH.bottlenecks && ARCH.bottlenecks.length){
       bcount.textContent = ARCH.bottlenecks.length;
       blist.innerHTML = ARCH.bottlenecks.map(function(name){
-        return '<li data-metric="'+escapeHtml(name)+'">'+escapeHtml(name)+'</li>';
+        var st = diffStatusForMetric(name);
+        return '<li data-metric="'+escapeHtml(name)+'"'+statusAttr(st)+'>'+escapeHtml(name)+statusBadgeHtml(st)+'</li>';
       }).join('');
     } else {
       q('#bottleneck-block').style.display = 'none';
@@ -1313,7 +1562,8 @@ PAGE_JS = """
         parts.push('<div class="group-title">'+escapeHtml(g)+' ('+items.length+')</div>');
         parts.push('<ul class="metric-list">');
         items.forEach(function(name){
-          parts.push('<li data-metric="'+escapeHtml(name)+'">'+escapeHtml(name)+'</li>');
+          var st = diffStatusForMetric(name);
+          parts.push('<li data-metric="'+escapeHtml(name)+'"'+statusAttr(st)+'>'+escapeHtml(name)+statusBadgeHtml(st)+'</li>');
         });
         parts.push('</ul>');
       });
@@ -1337,7 +1587,8 @@ PAGE_JS = """
         nParts.push('<div class="group-title">'+escapeHtml(g || 'Uncategorized')+' ('+items.length+')</div>');
         nParts.push('<ul class="metric-list">');
         items.forEach(function(name){
-          nParts.push('<li data-metric="'+escapeHtml(name)+'">'+escapeHtml(name)+'</li>');
+          var st = diffStatusForMetric(name);
+          nParts.push('<li data-metric="'+escapeHtml(name)+'"'+statusAttr(st)+'>'+escapeHtml(name)+statusBadgeHtml(st)+'</li>');
         });
         nParts.push('</ul>');
       });
@@ -1523,8 +1774,10 @@ PAGE_JS = """
     wireSvg();
     wireSearch();
     tmaInitCollapse();
+    initCompareToggle();
     renderTmaTree();
     renderMetricsSidebar();
+    renderRemovedSections();
     renderList();
     renderDetail();
   });
@@ -2242,7 +2495,248 @@ def _serialize_metric(m) -> dict:
     }
 
 
-def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None) -> dict:
+# Same-core-type predecessor for the "compare against baseline" feature.
+# P-core server → previous P-core server; E-core server → previous E-core
+# server. Adding a new supported platform here is a one-line change.
+PREDECESSOR = {
+    "GNR": "EMR",  # Granite Rapids (P-core) ← Emerald Rapids
+    "CWF": "SRF",  # Clearwater Forest (E-core) ← Sierra Forest
+}
+
+
+# Uncore-unit renames between generations. When comparing GNR to EMR, an
+# EMR event under `M2M` almost always has a counterpart under `B2CMI` on GNR
+# (same event, new Unit name). We use this map to classify "removed" events
+# into buckets so the user sees "1000 renamed" rather than "1000 gone."
+#
+# The map is intentionally per-current-platform so a future GNR-successor's
+# renames can be added without disturbing this one.
+UNIT_RENAMES = {
+    "GNR": {
+        # EMR name → GNR name  (or None if the unit was retired)
+        "iMC":    "IMC",      # capitalisation change
+        "M2M":    "B2CMI",    # mesh↔memory bridge renamed
+        "M3UPI":  "B2UPI",    # mesh↔UPI bridge renamed
+        "M2PCIe": None,       # merged into other units
+        "M2HBM":  None,       # HBM discontinued
+        "MCHBM":  None,       # HBM controller discontinued
+    },
+    # CWF's E-core predecessor SRF may have its own renames — none known yet.
+    "CWF": {},
+}
+
+
+def _event_signature(ev) -> tuple:
+    """Fingerprint used to detect "changed" events across platforms.
+    Only counts semantic differences — encoding and counter set. Description
+    edits between releases don't count as a change; they're editorial."""
+    return (
+        ev.event_code or "",
+        ev.umask or "",
+        (ev.raw.get("UMaskExt") or "") if ev.raw else "",
+        ev.counter or "",
+    )
+
+
+def _metric_signature(m) -> tuple:
+    return (
+        (m.formula or "").strip(),
+        tuple(sorted(e["Name"] for e in m.events)),
+        m.level,
+    )
+
+
+def _build_diff(current: PlatformCatalog,
+                baseline: PlatformCatalog) -> dict:
+    """Compute per-event / per-metric status maps + summary counts."""
+    events_status = {}     # ev name -> 'new' | 'changed' | 'same'
+    metrics_status = {}    # metric name -> 'new' | 'changed' | 'same'
+    events_removed = []    # names that exist in baseline but not current
+    metrics_removed = []
+
+    cur_events = {e.name: e for e in current.events if not e.deprecated}
+    base_events = {e.name: e for e in baseline.events if not e.deprecated}
+    for name, e in cur_events.items():
+        b = base_events.get(name)
+        if b is None:
+            events_status[name] = "new"
+        elif _event_signature(e) != _event_signature(b):
+            events_status[name] = "changed"
+        else:
+            events_status[name] = "same"
+    for name in sorted(set(base_events) - set(cur_events)):
+        events_removed.append(name)
+
+    cur_metrics = {m.name: m for m in current.metrics}
+    base_metrics = {m.name: m for m in baseline.metrics}
+    for name, m in cur_metrics.items():
+        b = base_metrics.get(name)
+        if b is None:
+            metrics_status[name] = "new"
+        elif _metric_signature(m) != _metric_signature(b):
+            metrics_status[name] = "changed"
+        else:
+            metrics_status[name] = "same"
+    for name in sorted(set(base_metrics) - set(cur_metrics)):
+        metrics_removed.append(name)
+
+    from ..core.arch_map import build_arch_map
+    cur_am = build_arch_map(current)
+    ev_to_cell = {}
+    for cell in list(cur_am.core_cells) + list(cur_am.uncore_cells):
+        _leaf_paths(cell, (cell.id,), ev_to_cell)
+
+    # Bucket the "removed" events by why they went away — many are just
+    # unit renames (M2M → B2CMI on GNR). Users care about *genuine* removals,
+    # not rename churn. See UNIT_RENAMES.
+    renames = UNIT_RENAMES.get(current.platform.shortname, {})
+    # Symmetric map for the "new" direction (target unit → source unit): a
+    # GNR event under a rename-target Unit isn't really "new" if the same
+    # basename existed on the baseline under the old Unit.
+    reverse_renames = {v: k for k, v in renames.items() if v is not None}
+
+    removed_buckets = {
+        "renamed": [],       # unit rename (still exists under a new Unit name)
+        "unit_retired": [],  # unit dropped entirely (e.g. HBM)
+        "denser_variants": [],  # EMR shipped per-slice variants
+        "genuinely_gone": [],  # core events or otherwise-unmatched drops
+    }
+    new_buckets = {
+        "renamed": [],       # exists on baseline under the old Unit name
+        "genuinely_new": [], # not present on the baseline at all
+    }
+    # Best-effort basename extractor (drops UNC_<UNIT>_ prefix so we can
+    # match a rename-pair by remainder).
+    def _base(name):
+        # UNC_M2M_IMC_READS.NORMAL → IMC_READS
+        if not name.startswith("UNC_"):
+            return name
+        parts = name[len("UNC_"):].split("_", 1)
+        return parts[1] if len(parts) > 1 else parts[0]
+
+    cur_bases_by_unit = {}
+    for e in current.events:
+        u = e.raw.get("Unit") or ""
+        if not u:
+            continue
+        cur_bases_by_unit.setdefault(u, set()).add(_base(e.name))
+    base_bases_by_unit = {}
+    for e in baseline.events:
+        if e.deprecated:
+            continue
+        u = e.raw.get("Unit") or ""
+        if not u:
+            continue
+        base_bases_by_unit.setdefault(u, set()).add(_base(e.name))
+
+    base_events_lookup = {e.name: e for e in baseline.events if not e.deprecated}
+    for name in events_removed:
+        e = base_events_lookup.get(name)
+        u = (e.raw.get("Unit") if e else "") or ""
+        if u in renames:
+            target = renames[u]
+            if target is None:
+                removed_buckets["unit_retired"].append(name)
+            else:
+                b = _base(name)
+                if b in cur_bases_by_unit.get(target, set()):
+                    removed_buckets["renamed"].append(name)
+                else:
+                    removed_buckets["unit_retired"].append(name)
+        elif u and u not in cur_bases_by_unit:
+            removed_buckets["unit_retired"].append(name)
+        elif u and _base(name) not in cur_bases_by_unit.get(u, set()):
+            removed_buckets["denser_variants"].append(name)
+        else:
+            removed_buckets["genuinely_gone"].append(name)
+
+    # Reclassify the "new" set: if a current event is under a rename-target
+    # Unit and the baseline had the same basename under the old Unit, it's
+    # a rename in disguise, not new.
+    cur_events_lookup = {e.name: e for e in current.events if not e.deprecated}
+    for name, status in list(events_status.items()):
+        if status != "new":
+            continue
+        e = cur_events_lookup.get(name)
+        u = (e.raw.get("Unit") if e else "") or ""
+        old_unit = reverse_renames.get(u)
+        if old_unit and _base(name) in base_bases_by_unit.get(old_unit, set()):
+            # This "new" event is really the same event under a renamed unit.
+            events_status[name] = "same"      # don't highlight in diff mode
+            new_buckets["renamed"].append(name)
+            # remove it from any per-cell rollup as new; recount later
+        else:
+            new_buckets["genuinely_new"].append(name)
+
+    # Per-cell rollup for the summary strip. Uses the post-reclassification
+    # status so rename-in-disguise doesn't show up as "new" per cell.
+    cell_rollup = {}
+    for name, status in events_status.items():
+        path = ev_to_cell.get(name)
+        if not path:
+            continue
+        cell_id = path[0]
+        r = cell_rollup.setdefault(
+            cell_id,
+            {"new": 0, "changed": 0, "same": 0, "removed": 0},
+        )
+        r[status] += 1
+    # Only count *genuinely gone* events per cell (baseline classifier may
+    # not exist, so we skip cell attribution for removed-in-retired-units).
+    try:
+        base_am = build_arch_map(baseline)
+        base_ev_cells = {}
+        for cell in list(base_am.core_cells) + list(base_am.uncore_cells):
+            _leaf_paths(cell, (cell.id,), base_ev_cells)
+    except ValueError:
+        base_ev_cells = {}
+    for name in removed_buckets["genuinely_gone"]:
+        path = base_ev_cells.get(name)
+        cell_id = path[0] if path else "unclassified"
+        r = cell_rollup.setdefault(
+            cell_id,
+            {"new": 0, "changed": 0, "same": 0, "removed": 0},
+        )
+        r["removed"] += 1
+
+    counts = {
+        "events": {
+            # Post-reclassification counts — these match what the UI highlights.
+            "new": sum(1 for s in events_status.values() if s == "new"),
+            "changed": sum(1 for s in events_status.values() if s == "changed"),
+            "same": sum(1 for s in events_status.values() if s == "same"),
+            "new_renamed": len(new_buckets["renamed"]),
+            "removed_total": len(events_removed),
+            "removed_renamed": len(removed_buckets["renamed"]),
+            "removed_unit_retired": len(removed_buckets["unit_retired"]),
+            "removed_denser_variants": len(removed_buckets["denser_variants"]),
+            "removed_genuinely_gone": len(removed_buckets["genuinely_gone"]),
+        },
+        "metrics": {
+            "new": sum(1 for s in metrics_status.values() if s == "new"),
+            "changed": sum(1 for s in metrics_status.values() if s == "changed"),
+            "same": sum(1 for s in metrics_status.values() if s == "same"),
+            "removed": len(metrics_removed),
+        },
+    }
+    return {
+        "baseline": baseline.platform.shortname,
+        "baseline_name": baseline.platform.name,
+        "events_status": events_status,
+        "metrics_status": metrics_status,
+        "events_removed": events_removed,
+        "events_removed_genuine": removed_buckets["genuinely_gone"],
+        "events_removed_buckets": {
+            k: v for k, v in removed_buckets.items()
+        },
+        "metrics_removed": metrics_removed,
+        "counts": counts,
+        "cell_rollup": cell_rollup,
+    }
+
+
+def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None,
+                   baseline: Optional[PlatformCatalog] = None) -> dict:
     cells = {}
     events = {}
 
@@ -2354,6 +2848,14 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None)
             for k in non_tma_categories:
                 non_tma_categories[k].sort()
 
+    diff = None
+    if catalog is not None and baseline is not None:
+        try:
+            diff = _build_diff(catalog, baseline)
+        except Exception:
+            # Compare failure should never break page render.
+            diff = None
+
     return {
         "cells": cells,
         "events": events,
@@ -2362,6 +2864,7 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None)
         "bottlenecks": bottlenecks,
         "info_groups": info_groups,
         "non_tma_categories": non_tma_categories,
+        "diff": diff,
     }
 
 
@@ -2371,7 +2874,8 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None)
 
 def render_page(arch_map: ArchMap,
                 platform_display: Optional[str] = None,
-                catalog: Optional[PlatformCatalog] = None) -> str:
+                catalog: Optional[PlatformCatalog] = None,
+                baseline_catalog: Optional[PlatformCatalog] = None) -> str:
     display = platform_display or arch_map.platform
     total = arch_map.total_core + arch_map.total_uncore
     mapped = arch_map.core_mapped + arch_map.uncore_mapped
@@ -2389,7 +2893,7 @@ def render_page(arch_map: ArchMap,
         target_width=canvas_w,
     )
 
-    payload = _build_payload(arch_map, catalog=catalog)
+    payload = _build_payload(arch_map, catalog=catalog, baseline=baseline_catalog)
     payload_json = json.dumps(payload, separators=(",", ":"))
     n_metrics = len(payload["metrics"])
     n_events = len(payload["events"])
@@ -2451,6 +2955,16 @@ def render_page(arch_map: ArchMap,
   <div class="tabs">
     <div class="tab active" data-tab="events">Events <span class="badge">{n_events}</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Hardware PMU events</b> — the raw counters exposed by the CPU. Each has an EventCode+UMask that programs a physical counter register. Grouped here by which uarch block generates them (Frontend / Backend / Memory / CHA / IMC / …).</span></span></div>
     <div class="tab" data-tab="metrics">Metrics <span class="badge">{n_metrics}</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Derived measurements</b> — arithmetic formulas over one or more events that produce a meaningful number (IPC, DRAM bandwidth, L2 miss rate, TMA slot fractions). Comes from Intel's <code>*_metrics.json</code>. Includes TMA nodes, bottleneck aggregates, and standalone info metrics.</span></span></div>
+    <div class="compare-toggle-wrap"><label class="compare-toggle" id="compare-toggle-label" style="display:none;">
+      <input type="checkbox" id="compare-toggle"> Compare to <span id="compare-baseline">—</span>
+      <span class="help-tip" tabindex="0">?<span class="tip">When on, every event and metric is coloured by its status vs the immediate predecessor of the same core type: <b class="dot dot-new"></b> new since the baseline, <b class="dot dot-changed"></b> encoding/formula changed, unmarked = unchanged. Removed items appear in a dedicated section since they don't exist on the current platform's diagram.</span></span>
+    </label></div>
+  </div>
+  <div class="compare-strip" id="compare-strip" style="display:none;">
+    <div class="cs-header">Compared to <b id="cs-baseline">—</b>
+      <span class="cs-counts" id="cs-counts"></span>
+    </div>
+    <div class="cs-cells" id="cs-cells"></div>
   </div>
 </header>
 
@@ -2465,6 +2979,10 @@ def render_page(arch_map: ArchMap,
         <h2>Uncore / SoC</h2>
         {uncore_svg}
       </div>
+      <details class="subblock" id="removed-events-block" style="display:none;">
+        <summary>Removed since baseline <span class="badge" id="removed-events-count">0</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Events present on the predecessor that this platform no longer defines.</b> Note that many "removed" events are actually renamed — e.g. EMR's <code>UNC_M2M_*</code> became GNR's <code>UNC_B2CMI_*</code>, and <code>iMC</code> became <code>IMC</code>. The count includes those renames, so it can look large. HBM-related units (<code>M2HBM</code>, <code>MCHBM</code>) are genuinely gone since HBM was SPR-only.</span></span></summary>
+        <ul class="metric-list removed-list" id="removed-events-list"></ul>
+      </details>
     </div>
     <div class="view" id="view-metrics">
       <div class="diagram-block tma-block">

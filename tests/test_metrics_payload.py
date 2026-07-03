@@ -121,6 +121,42 @@ def test_pseudo_events_have_no_perf_block():
     assert pf["perf"] is None
 
 
+def test_diff_payload_gnr_vs_emr():
+    """GNR should carry a diff block vs EMR with sensible bucketed counts."""
+    from perfmon_tools.archmap.render import _build_payload, PREDECESSOR
+    cat = _catalog_for("GNR")
+    baseline = _catalog_for(PREDECESSOR["GNR"])
+    from perfmon_tools.core.arch_map import build_arch_map
+    p = _build_payload(build_arch_map(cat), catalog=cat, baseline=baseline)
+    d = p["diff"]
+    assert d is not None
+    assert d["baseline"] == "EMR"
+    # Real GNR-side deltas: a couple hundred new, some hundreds changed,
+    # small number of genuinely gone.
+    c = d["counts"]["events"]
+    assert c["new"] > 100
+    assert c["changed"] > 100
+    assert c["removed_genuinely_gone"] < 100
+    # Renames + retired buckets carry the bulk of raw "removed" churn.
+    assert (c["removed_renamed"] + c["removed_unit_retired"]
+            + c["removed_denser_variants"]) > 1000
+
+
+def test_diff_cwf_vs_srf_flags_missing_tma_tree():
+    """The SRF→CWF diff should list SRF's TMA metrics as removed."""
+    from perfmon_tools.archmap.render import _build_payload, PREDECESSOR
+    cat = _catalog_for("CWF")
+    baseline = _catalog_for(PREDECESSOR["CWF"])
+    from perfmon_tools.core.arch_map import build_arch_map
+    p = _build_payload(build_arch_map(cat), catalog=cat, baseline=baseline)
+    d = p["diff"]
+    assert d is not None
+    # The removed metrics list should contain the SRF TMA roots.
+    removed = set(d["metrics_removed"])
+    for name in ("Frontend_Bound", "Backend_Bound", "Bad_Speculation"):
+        assert name in removed, f"{name} expected in removed metrics"
+
+
 def test_pseudo_events_carry_computation_formula():
     """Every synthesized (non-real) pseudo-event should describe how it's
     computed. Note: some names in the pseudo registry (TOPDOWN.SLOTS) are
