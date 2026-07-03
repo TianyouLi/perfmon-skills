@@ -119,3 +119,22 @@ def test_pseudo_events_have_no_perf_block():
     p = _payload("GNR")
     pf = p["events"]["PERF_METRICS.BACKEND_BOUND"]
     assert pf["perf"] is None
+
+
+def test_pseudo_events_carry_computation_formula():
+    """Every synthesized (non-real) pseudo-event should describe how it's
+    computed. Note: some names in the pseudo registry (TOPDOWN.SLOTS) are
+    real events on GNR and take the normal path instead."""
+    p = _payload("GNR")
+    for name in [
+        "PERF_METRICS.FRONTEND_BOUND",
+        "PERF_METRICS.BACKEND_BOUND",
+        "PERF_METRICS.BAD_SPECULATION",
+        "PERF_METRICS.RETIRING",
+    ]:
+        pf = p["events"].get(name)
+        assert pf is not None, f"{name} missing from payload"
+        assert pf.get("pseudo") is True, f"{name} should be marked pseudo"
+        assert pf.get("pseudo_formula"), f"{name} has no formula"
+        # The topdown fractions should mention TOPDOWN.SLOTS (their denominator).
+        assert "TOPDOWN.SLOTS" in pf["pseudo_formula"]

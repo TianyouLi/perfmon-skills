@@ -198,6 +198,11 @@ ul.event-list li.selected { background: var(--selected); color: white; }
   text-transform: uppercase; letter-spacing: 0.08em;
   vertical-align: middle;
 }
+.click-hint {
+  font-size: 0.65rem; color: var(--muted); font-weight: 400;
+  text-transform: none; letter-spacing: normal;
+  margin-left: 0.5rem; font-style: italic;
+}
 
 .detail-section {
   margin-top: 0.9rem;
@@ -519,7 +524,7 @@ PAGE_JS = """
       if(m.category) pathBits.push(m.category);
       if(m.parent) pathBits.push(m.parent);
       if(pathBits.length) parts.push('<div class="path">'+escapeHtml(pathBits.join(' › '))+'</div>');
-      parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')</h4>');
+      parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
       parts.push('<ul class="event-list">');
       m.events.forEach(function(name){
         parts.push('<li data-ev="'+encodeURIComponent(name)+'">'+escapeHtml(name)+'</li>');
@@ -557,19 +562,34 @@ PAGE_JS = """
     });
   }
 
+  // Distinguish single vs double click. Single-click just shows the item's
+  // detail in the bottom pane (stays on the current tab); double-click
+  // navigates to the item's home tab and highlights it there.
+  function bindNavClicks(el, onSingle, onDouble){
+    var timer = null;
+    el.addEventListener('click', function(e){
+      e.preventDefault();
+      if(timer){ return; }  // between two clicks of an in-progress double
+      timer = setTimeout(function(){
+        timer = null;
+        onSingle();
+      }, 220);
+    });
+    el.addEventListener('dblclick', function(e){
+      e.preventDefault();
+      if(timer){ clearTimeout(timer); timer = null; }
+      onDouble();
+    });
+  }
+
   function wireEventListItems(){
     qa('#pane-list li[data-ev]').forEach(function(li){
-      li.addEventListener('click', function(){
-        var name = decodeURIComponent(li.getAttribute('data-ev'));
-        // On the Metrics tab (viewing a metric's feeders), clicking an event
-        // name should jump to the Events tab and highlight it on the SVG.
-        // On the Events tab, keep the current behavior (just show detail).
-        if(state.tab === 'metrics'){
-          jumpToEvent(name);
-        } else {
-          selectEvent(name);
-        }
-      });
+      var name = decodeURIComponent(li.getAttribute('data-ev'));
+      bindNavClicks(
+        li,
+        function(){ selectEvent(name); },   // single-click: just show detail
+        function(){ jumpToEvent(name); }    // double-click: switch to Events tab
+      );
     });
   }
 
@@ -666,6 +686,13 @@ PAGE_JS = """
       parts.push('</div>');
     }
 
+    if(ev.pseudo_formula){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>How it is computed</h4>');
+      parts.push('<div class="formula">'+escapeHtml(ev.pseudo_formula)+'</div>');
+      parts.push('</div>');
+    }
+
     if(ev.acronyms && ev.acronyms.length){
       parts.push('<div class="detail-section">');
       parts.push('<h4>Acronyms in this event</h4>');
@@ -681,7 +708,8 @@ PAGE_JS = """
 
     if(ev.used_by && ev.used_by.length){
       parts.push('<div class="detail-section">');
-      parts.push('<h4>Used by '+ev.used_by.length+' metric'+(ev.used_by.length===1?'':'s')+'</h4>');
+      parts.push('<h4>Used by '+ev.used_by.length+' metric'+(ev.used_by.length===1?'':'s')
+        +'<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
       parts.push('<div class="usedby">');
       ev.used_by.forEach(function(mname){
         parts.push('<span class="m-chip" data-jump-metric="'+encodeURIComponent(mname)+'">'+escapeHtml(mname)+'</span>');
@@ -745,7 +773,8 @@ PAGE_JS = """
 
     if(m.events && m.events.length){
       parts.push('<div class="detail-section">');
-      parts.push('<h4>Feeder events ('+m.events.length+')</h4>');
+      parts.push('<h4>Feeder events ('+m.events.length+')'
+        +'<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
       parts.push('<div class="feeders">');
       m.events.forEach(function(ename){
         parts.push('<span class="feeder" data-jump-event="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+'</span>');
@@ -786,19 +815,27 @@ PAGE_JS = """
 
   function wireDetailMetricChips(){
     qa('#pane-detail .m-chip[data-jump-metric]').forEach(function(el){
-      el.addEventListener('click', function(){
-        var name = decodeURIComponent(el.getAttribute('data-jump-metric'));
-        setTab('metrics'); selectMetric(name);
-      });
+      var name = decodeURIComponent(el.getAttribute('data-jump-metric'));
+      bindNavClicks(
+        el,
+        // Single-click: show metric detail without switching tabs.
+        function(){ state.metric = name; state.eventName = null; renderDetail(); },
+        // Double-click: switch to Metrics tab and highlight in the tree.
+        function(){ setTab('metrics'); selectMetric(name); }
+      );
     });
   }
 
   function wireDetailFeederChips(){
     qa('#pane-detail .feeder[data-jump-event]').forEach(function(el){
-      el.addEventListener('click', function(){
-        var name = decodeURIComponent(el.getAttribute('data-jump-event'));
-        jumpToEvent(name);
-      });
+      var name = decodeURIComponent(el.getAttribute('data-jump-event'));
+      bindNavClicks(
+        el,
+        // Single-click: replace bottom detail pane with the event, stay put.
+        function(){ state.eventName = name; renderDetail(); },
+        // Double-click: switch to Events tab and highlight on SVG.
+        function(){ jumpToEvent(name); }
+      );
     });
   }
 
@@ -1906,22 +1943,22 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None)
             pseudo = get_pseudo_event(ev_name)
             if pseudo is None:
                 continue
-            brief, detail, source = pseudo
             events[ev_name] = {
                 "name": ev_name,
-                "brief": brief,
-                "public": detail,
+                "brief": pseudo["brief"],
+                "public": pseudo["detail"],
                 "unit": "",
                 "code": "",
                 "umask": "",
                 "counter": "",
                 "precise": "0",
                 "sample": "",
-                "note": source,
+                "note": pseudo["source"],
                 "acronyms": [],
                 "perf": None,
                 "used_by": sorted(set(mlist)),
                 "pseudo": True,
+                "pseudo_formula": pseudo.get("formula"),
             }
 
         # Build the TMA tree (may be empty on platforms like CWF)

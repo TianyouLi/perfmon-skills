@@ -373,77 +373,226 @@ CATEGORY_NOTES = {
 # ---------------------------------------------------------------------------
 # Pseudo-events referenced by metric formulas but not present in the perfmon
 # events JSON. These are typically kernel-exposed synthetic counters (like
-# PERF_METRICS.*), free-running energy MSRs, or the timestamp counter. Values
-# are (brief, detail, source) — detail explains what the counter represents,
-# source explains where the kernel gets it from and how to read it with perf.
+# PERF_METRICS.*), free-running energy MSRs, or the timestamp counter. Each
+# entry is a dict:
+#   brief   — one-line summary
+#   detail  — a paragraph of context
+#   source  — how the kernel exposes it / perf command to read it
+#   formula — conceptual definition or reconstruction recipe (may be None
+#             when the concept is a direct hardware reading)
 # ---------------------------------------------------------------------------
 
 PSEUDO_EVENTS = {
-    "PERF_METRICS.FRONTEND_BOUND": (
-        "Fraction of pipeline slots stalled on the frontend.",
-        "One of the four TMA L1 buckets. Reads a dedicated fixed-function counter that Intel added in Icelake so software doesn't have to compute the top-level TMA breakdown from raw events. Value is (nominally) already normalized to a fraction of TOPDOWN.SLOTS.",
-        "perf reports as `topdown-fe-bound`. Program together with `slots` and the other three PERF_METRICS.* buckets."
-    ),
-    "PERF_METRICS.BACKEND_BOUND": (
-        "Fraction of pipeline slots stalled on the backend.",
-        "TMA L1 bucket. High when execution units, memory, or scheduling resources are the bottleneck. Split further into `Memory_Bound` and `Core_Bound` at L2 (which use different formulas, not PERF_METRICS.*).",
-        "perf reports as `topdown-be-bound`."
-    ),
-    "PERF_METRICS.BAD_SPECULATION": (
-        "Fraction of pipeline slots wasted on mis-speculated work.",
-        "TMA L1 bucket. Includes branch-mispredict recovery and machine clears (SMC, memory ordering, TSX aborts).",
-        "perf reports as `topdown-bad-spec`."
-    ),
-    "PERF_METRICS.RETIRING": (
-        "Fraction of pipeline slots that successfully retired.",
-        "TMA L1 bucket. Higher is generally better (more useful work per cycle) — but high values combined with low IPC can indicate microcode-heavy code (e.g. gathers, denormal FP).",
-        "perf reports as `topdown-retiring`."
-    ),
-    "PERF_METRICS.BRANCH_MISPREDICTS": (
-        "L2 refinement of Bad_Speculation — fraction from branch mispredicts.",
-        "Only the mispredict portion; complement is `Machine_Clears`. Available on newer parts as an L2 PERF_METRICS extension.",
-        "perf reports as `topdown-br-mispredict`."
-    ),
-    "PERF_METRICS.FETCH_LATENCY": (
-        "L2 refinement of Frontend_Bound — fraction spent waiting for fetch.",
-        "Distinguishes latency-bound frontend stalls (iCache/iTLB misses, branch mispredict recovery) from bandwidth-bound frontend stalls (decode throughput).",
-        "perf reports as `topdown-fetch-lat`."
-    ),
-    "PERF_METRICS.HEAVY_OPERATIONS": (
-        "L2 refinement of Retiring — fraction from complex instructions.",
-        "Includes microcode-sequenced uops (gathers, string ops, page-walks, denormal FP). Sibling `Light_Operations` = simple retiring uops.",
-        "perf reports as `topdown-heavy-ops`."
-    ),
-    "PERF_METRICS.MEMORY_BOUND": (
-        "L2 refinement of Backend_Bound — fraction stalled on memory.",
-        "Available on some newer parts. Sibling `Core_Bound` (=BE−MEM) captures execution-resource stalls.",
-        "perf reports as `topdown-mem-bound`."
-    ),
-    "FREERUN_PKG_ENERGY_STATUS": (
-        "Package-wide energy consumed since boot, in RAPL units.",
-        "Free-running MSR read via the RAPL PMU. Delta over a measurement window gives package power. Used by metrics like `Info_PKG_Energy` or `PowerLicense` computations.",
-        "Use `perf stat -e power/energy-pkg/` (or `-e msr/package_energy/`)."
-    ),
-    "FREERUN_DRAM_ENERGY_STATUS": (
-        "DRAM energy consumed since boot, in RAPL units.",
-        "Same mechanism as PKG_ENERGY but for the DIMMs. Not always exposed — depends on RAPL domain support on the SKU.",
-        "Use `perf stat -e power/energy-ram/` when present."
-    ),
-    "TSC": (
-        "Time Stamp Counter — wall-clock reference in CPU cycles.",
-        "Read via `rdtsc`. On modern Intel it ticks at the platform reference frequency, independent of DVFS. Used as a denominator when converting event counts to per-time-unit rates.",
-        "perf exposes as `cycles` when `-e cycles` is used with `--user-regs` on some kernels; otherwise `cpu/event=0x3c,umask=0x0/` reads the actual clock counter (`CPU_CLK_UNHALTED.REF_TSC`)."
-    ),
-    "TOPDOWN.SLOTS": (
-        "Total pipeline slots issued (the TMA denominator).",
-        "One fixed-function counter that ticks every issue slot per cycle × slot-width. All TMA L1 fractions are counts divided by this. Exposed as `slots` in perf.",
-        "perf: `-e slots` (must appear in the same group as the PERF_METRICS.* events)."
-    ),
+    "PERF_METRICS.FRONTEND_BOUND": {
+        "brief": "Fraction of pipeline slots stalled on the frontend.",
+        "detail": (
+            "One of the four TMA L1 buckets. Reads a dedicated fixed-function "
+            "counter that Intel added in Icelake so software doesn't have to "
+            "compute the top-level TMA breakdown from raw events."
+        ),
+        "source": (
+            "perf reports as `topdown-fe-bound`. Program together with `slots` "
+            "and the other three PERF_METRICS.* buckets."
+        ),
+        "formula": (
+            "PERF_METRICS.FRONTEND_BOUND / TOPDOWN.SLOTS\n"
+            "\n"
+            "Conceptually, each pipeline slot per cycle is classified into one of "
+            "four buckets by the retirement microarchitecture:\n"
+            "  slot is stalled because the frontend didn't deliver a uop\n"
+            "The four PERF_METRICS.* buckets sum to 1.0 exactly (modulo counter\n"
+            "overflow and multiplexing).\n"
+            "\n"
+            "Pre-Icelake recipe (no PERF_METRICS hardware):\n"
+            "  IDQ_UOPS_NOT_DELIVERED.CORE / (4 * CPU_CLK_UNHALTED.THREAD)"
+        ),
+    },
+    "PERF_METRICS.BACKEND_BOUND": {
+        "brief": "Fraction of pipeline slots stalled on the backend.",
+        "detail": (
+            "TMA L1 bucket. High when execution units, memory, or scheduling "
+            "resources are the bottleneck. Split further into Memory_Bound and "
+            "Core_Bound at L2 (which use different formulas, not PERF_METRICS.*)."
+        ),
+        "source": "perf reports as `topdown-be-bound`.",
+        "formula": (
+            "PERF_METRICS.BACKEND_BOUND / TOPDOWN.SLOTS\n"
+            "\n"
+            "Pre-Icelake recipe:\n"
+            "  1 - (Frontend_Bound + Bad_Speculation + Retiring)\n"
+            "or equivalently:\n"
+            "  CYCLE_ACTIVITY.STALLS_TOTAL / CPU_CLK_UNHALTED.THREAD "
+            "(with adjustments for retiring uops)"
+        ),
+    },
+    "PERF_METRICS.BAD_SPECULATION": {
+        "brief": "Fraction of pipeline slots wasted on mis-speculated work.",
+        "detail": (
+            "TMA L1 bucket. Includes branch-mispredict recovery and machine "
+            "clears (SMC, memory ordering, TSX aborts)."
+        ),
+        "source": "perf reports as `topdown-bad-spec`.",
+        "formula": (
+            "PERF_METRICS.BAD_SPECULATION / TOPDOWN.SLOTS\n"
+            "\n"
+            "Pre-Icelake recipe:\n"
+            "  ( UOPS_ISSUED.ANY - UOPS_RETIRED.RETIRE_SLOTS\n"
+            "    + N * INT_MISC.RECOVERY_CYCLES )\n"
+            "  / (4 * CPU_CLK_UNHALTED.THREAD)"
+        ),
+    },
+    "PERF_METRICS.RETIRING": {
+        "brief": "Fraction of pipeline slots that successfully retired.",
+        "detail": (
+            "TMA L1 bucket. Higher is generally better (more useful work per "
+            "cycle) — but high values combined with low IPC can indicate "
+            "microcode-heavy code (e.g. gathers, denormal FP)."
+        ),
+        "source": "perf reports as `topdown-retiring`.",
+        "formula": (
+            "PERF_METRICS.RETIRING / TOPDOWN.SLOTS\n"
+            "\n"
+            "Pre-Icelake recipe:\n"
+            "  UOPS_RETIRED.RETIRE_SLOTS / (4 * CPU_CLK_UNHALTED.THREAD)"
+        ),
+    },
+    "PERF_METRICS.BRANCH_MISPREDICTS": {
+        "brief": "L2 refinement of Bad_Speculation — fraction from branch mispredicts.",
+        "detail": (
+            "Only the mispredict portion; complement is Machine_Clears. Available "
+            "on newer parts as an L2 PERF_METRICS extension."
+        ),
+        "source": "perf reports as `topdown-br-mispredict`.",
+        "formula": (
+            "PERF_METRICS.BRANCH_MISPREDICTS / TOPDOWN.SLOTS\n"
+            "\n"
+            "Approximately:\n"
+            "  BR_MISP_RETIRED.ALL_BRANCHES / (BR_MISP_RETIRED.ALL_BRANCHES\n"
+            "                                  + MACHINE_CLEARS.COUNT)\n"
+            "  * PERF_METRICS.BAD_SPECULATION"
+        ),
+    },
+    "PERF_METRICS.FETCH_LATENCY": {
+        "brief": "L2 refinement of Frontend_Bound — fraction spent waiting for fetch.",
+        "detail": (
+            "Distinguishes latency-bound frontend stalls (iCache/iTLB misses, "
+            "branch mispredict recovery) from bandwidth-bound frontend stalls "
+            "(decode throughput)."
+        ),
+        "source": "perf reports as `topdown-fetch-lat`.",
+        "formula": (
+            "PERF_METRICS.FETCH_LATENCY / TOPDOWN.SLOTS\n"
+            "\n"
+            "Pre-Icelake recipe:\n"
+            "  IDQ_UOPS_NOT_DELIVERED.CYCLES_0_UOPS_DELIV.CORE\n"
+            "  / CPU_CLK_UNHALTED.THREAD"
+        ),
+    },
+    "PERF_METRICS.HEAVY_OPERATIONS": {
+        "brief": "L2 refinement of Retiring — fraction from complex instructions.",
+        "detail": (
+            "Includes microcode-sequenced uops (gathers, string ops, page-walks, "
+            "denormal FP). Sibling Light_Operations = simple retiring uops."
+        ),
+        "source": "perf reports as `topdown-heavy-ops`.",
+        "formula": (
+            "PERF_METRICS.HEAVY_OPERATIONS / TOPDOWN.SLOTS\n"
+            "\n"
+            "Approximately (varies by uarch):\n"
+            "  UOPS_RETIRED.MS / (4 * CPU_CLK_UNHALTED.THREAD)"
+        ),
+    },
+    "PERF_METRICS.MEMORY_BOUND": {
+        "brief": "L2 refinement of Backend_Bound — fraction stalled on memory.",
+        "detail": (
+            "Available on some newer parts. Sibling Core_Bound (=BE-MEM) "
+            "captures execution-resource stalls."
+        ),
+        "source": "perf reports as `topdown-mem-bound`.",
+        "formula": (
+            "PERF_METRICS.MEMORY_BOUND / TOPDOWN.SLOTS\n"
+            "\n"
+            "Pre-Icelake recipe:\n"
+            "  (CYCLE_ACTIVITY.STALLS_MEM_ANY + RESOURCE_STALLS.SB)\n"
+            "  / CPU_CLK_UNHALTED.THREAD"
+        ),
+    },
+    "FREERUN_PKG_ENERGY_STATUS": {
+        "brief": "Package-wide energy consumed since boot, in RAPL units.",
+        "detail": (
+            "Free-running MSR read via the RAPL PMU. Delta over a measurement "
+            "window gives package power. Used by metrics like Info_PKG_Energy or "
+            "PowerLicense computations."
+        ),
+        "source": "Use `perf stat -e power/energy-pkg/` (or `-e msr/package_energy/`).",
+        "formula": (
+            "Direct MSR read: IA32_PKG_ENERGY_STATUS (MSR 0x611).\n"
+            "\n"
+            "Value is monotonically increasing; energy consumed over an\n"
+            "interval = (end - start) * energy_units, where energy_units\n"
+            "comes from MSR_RAPL_POWER_UNIT (0x606). Typical unit is 2^-14 J\n"
+            "on server SKUs.\n"
+            "\n"
+            "Power in watts = delta_energy_joules / interval_seconds."
+        ),
+    },
+    "FREERUN_DRAM_ENERGY_STATUS": {
+        "brief": "DRAM energy consumed since boot, in RAPL units.",
+        "detail": (
+            "Same mechanism as PKG_ENERGY but for the DIMMs. Not always exposed "
+            "— depends on RAPL domain support on the SKU."
+        ),
+        "source": "Use `perf stat -e power/energy-ram/` when present.",
+        "formula": (
+            "Direct MSR read: MSR_DRAM_ENERGY_STATUS (0x619).\n"
+            "\n"
+            "Same delta-and-scale calculation as PKG_ENERGY."
+        ),
+    },
+    "TSC": {
+        "brief": "Time Stamp Counter — wall-clock reference in CPU cycles.",
+        "detail": (
+            "Read via `rdtsc`. On modern Intel it ticks at the platform "
+            "reference frequency, independent of DVFS. Used as a denominator "
+            "when converting event counts to per-time-unit rates."
+        ),
+        "source": (
+            "perf exposes as `cycles` with `--user-regs` on some kernels; "
+            "otherwise `cpu/event=0x3c,umask=0x0/` reads CPU_CLK_UNHALTED.REF_TSC."
+        ),
+        "formula": (
+            "Direct instruction: RDTSC (or RDTSCP).\n"
+            "\n"
+            "Ticks at the invariant platform reference frequency (usually the\n"
+            "nominal / base clock — check CPUID leaf 0x15 for TSC frequency).\n"
+            "Does NOT scale with turbo / P-state. To convert cycles to seconds:\n"
+            "  seconds = tsc_delta / tsc_freq_hz\n"
+        ),
+    },
+    "TOPDOWN.SLOTS": {
+        "brief": "Total pipeline slots issued (the TMA denominator).",
+        "detail": (
+            "One fixed-function counter that ticks every issue slot per cycle "
+            "× slot-width. All TMA L1 fractions are counts divided by this. "
+            "Exposed as `slots` in perf."
+        ),
+        "source": "perf: `-e slots` (must appear in the same group as the PERF_METRICS.* events).",
+        "formula": (
+            "TOPDOWN.SLOTS = CPU_CLK_UNHALTED.THREAD * pipeline_width\n"
+            "\n"
+            "Pipeline width is uarch-specific:\n"
+            "  Icelake / Sapphire Rapids / Granite Rapids: 6 slots/cycle\n"
+            "  Skylake-X / earlier Xeon:                    4 slots/cycle\n"
+            "\n"
+            "This is why raw slot counts scale with core count and elapsed\n"
+            "cycles — always divide by SLOTS when comparing across runs."
+        ),
+    },
 }
 
 
 def get_pseudo_event(name: str):
-    """Return (brief, detail, source) for a pseudo-event, or None."""
+    """Return the pseudo-event dict for `name`, or None."""
     return PSEUDO_EVENTS.get(name)
 
 
