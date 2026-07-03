@@ -833,39 +833,66 @@ PAGE_JS = """
     var e = d.counts.events, m = d.counts.metrics;
     q('#cs-baseline').textContent = d.baseline_name || d.baseline;
 
-    // We only show *real* differences. Renames and denser-variant churn
-    // are filtered out (see UNIT_RENAMES + bucketing in Python).
-    var newTip = '';
-    if(e.new_renamed > 0){
-      newTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
-        '<b>' + e.new_renamed + ' events</b> that would otherwise look "new" ' +
-        'are renamed baseline events (unit renamed, same conceptual event).' +
-        ' They are shown as unchanged.</span></span>';
-    }
-    var removedTip = '';
+    // Each header number gets its own tooltip explaining precisely
+    // what that count means. The three event tooltips share a family of
+    // "here's what this number represents / here's what we filtered out"
+    // notes so the user isn't left guessing what +N / ~N / -N mean.
+    var base = escapeHtml(d.baseline);
+
+    // '+N' tooltip: what counts as new.
+    var newTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
+      '<b>' + e.new + ' new events</b> exist on this platform but not on ' +
+      base + '.<br><br>' +
+      'Reclassified out: <b>' + (e.new_renamed || 0) + '</b> events that ' +
+      'would otherwise look "new" — the Unit was renamed vs ' + base + ' ' +
+      '(e.g. M2M→B2CMI, iMC→IMC) but the event itself is a direct carry-over. ' +
+      'Those show as unchanged instead.' +
+      '</span></span>';
+
+    // '~N' tooltip: what counts as changed.
+    var chgTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
+      '<b>' + e.changed + ' events</b> exist on both platforms with the ' +
+      'same name but a different <b>encoding</b> — different EventCode, ' +
+      'UMask, UMaskExt, MSR value, or Counter set. Click any of the ' +
+      'highlighted events in a component below to see field-by-field ' +
+      'old→new detail.' +
+      '</span></span>';
+
+    // '-N' tooltip: what counts as removed (with breakdown of hidden churn).
     var hidden = (e.removed_renamed || 0) + (e.removed_rename_partial || 0) +
                  (e.removed_unit_retired || 0) + (e.removed_denser_variants || 0);
-    if(hidden > 0){
-      removedTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
-        'Additionally, <b>' + hidden + ' events</b> present on the baseline ' +
-        'do not appear on this platform, but are<br>' +
-        '&nbsp;• <b>' + (e.removed_renamed || 0) + '</b> renamed (same event under a new Unit, ' +
-        'e.g. M2M→B2CMI)<br>' +
-        '&nbsp;• <b>' + (e.removed_rename_partial || 0) + '</b> under a renamed Unit but the specific ' +
-        'sub-event was cut (e.g. some M3UPI variants not carried into B2UPI)<br>' +
-        '&nbsp;• <b>' + (e.removed_unit_retired || 0) + '</b> in Units that were dropped entirely ' +
-        '(e.g. HBM controllers M2HBM/MCHBM, M2PCIe)<br>' +
-        '&nbsp;• <b>' + (e.removed_denser_variants || 0) + '</b> denser baseline variants ' +
-        '(per-slice variants the current release consolidates).<br>' +
-        'These are filtered out so the headline count focuses on real semantic removals.' +
-        '</span></span>';
-    }
+    var remTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
+      '<b>' + e.removed_genuinely_gone + ' events</b> defined on ' + base +
+      ' are genuinely absent on this platform — no rename, no new Unit ' +
+      'houses them, no direct successor.<br><br>' +
+      '<b>' + e.removed_total + '</b> events total match by name only in ' +
+      base + '. The other <b>' + hidden + '</b> are filtered from this ' +
+      'headline because they are:<br>' +
+      '&nbsp;• <b>' + (e.removed_renamed || 0) + '</b> renamed — same event, ' +
+      'new Unit name (M2M→B2CMI, iMC→IMC)<br>' +
+      '&nbsp;• <b>' + (e.removed_rename_partial || 0) + '</b> under a renamed ' +
+      'Unit but the specific sub-event was cut<br>' +
+      '&nbsp;• <b>' + (e.removed_unit_retired || 0) + '</b> in Units dropped ' +
+      'entirely (HBM controllers M2HBM/MCHBM, M2PCIe)<br>' +
+      '&nbsp;• <b>' + (e.removed_denser_variants || 0) + '</b> denser ' +
+      'per-slice variants the current release consolidates' +
+      '</span></span>';
+
+    // Metrics counts get a single tooltip explaining the three parts.
     var metricsPart = '';
     if(d.metrics_diff_available){
+      var mTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
+        '<b>+' + m.new + '</b> metrics newly defined on this platform. ' +
+        '<b>~' + m.changed + '</b> metrics with a semantic change ' +
+        '(formula rewrite, event references added/removed, or TMA level ' +
+        'moved). Cosmetic differences like whitespace or extra parentheses ' +
+        'are ignored. <b>-' + m.removed + '</b> metrics defined on ' + base +
+        ' but not on this platform.' +
+        '</span></span>';
       metricsPart =
         '  Metrics: <span class="cs-new">+'+m.new+'</span> ' +
         '<span class="cs-changed">~'+m.changed+'</span> ' +
-        '<span class="cs-removed">-'+m.removed+'</span>';
+        '<span class="cs-removed">-'+m.removed+'</span>' + mTip;
     } else {
       metricsPart =
         '  <span style="color:var(--muted);font-style:italic;">Metrics diff skipped ' +
@@ -873,8 +900,8 @@ PAGE_JS = """
     }
     q('#cs-counts').innerHTML =
       'Events: <span class="cs-new">+'+e.new+'</span>' + newTip + ' ' +
-      '<span class="cs-changed">~'+e.changed+'</span> ' +
-      '<span class="cs-removed">-'+e.removed_genuinely_gone+'</span>' + removedTip +
+      '<span class="cs-changed">~'+e.changed+'</span>' + chgTip + ' ' +
+      '<span class="cs-removed">-'+e.removed_genuinely_gone+'</span>' + remTip +
       metricsPart;
     var host = q('#cs-cells');
     var cells = d.cell_rollup || {};
