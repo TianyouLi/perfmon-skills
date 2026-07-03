@@ -370,6 +370,83 @@ CATEGORY_NOTES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Pseudo-events referenced by metric formulas but not present in the perfmon
+# events JSON. These are typically kernel-exposed synthetic counters (like
+# PERF_METRICS.*), free-running energy MSRs, or the timestamp counter. Values
+# are (brief, detail, source) — detail explains what the counter represents,
+# source explains where the kernel gets it from and how to read it with perf.
+# ---------------------------------------------------------------------------
+
+PSEUDO_EVENTS = {
+    "PERF_METRICS.FRONTEND_BOUND": (
+        "Fraction of pipeline slots stalled on the frontend.",
+        "One of the four TMA L1 buckets. Reads a dedicated fixed-function counter that Intel added in Icelake so software doesn't have to compute the top-level TMA breakdown from raw events. Value is (nominally) already normalized to a fraction of TOPDOWN.SLOTS.",
+        "perf reports as `topdown-fe-bound`. Program together with `slots` and the other three PERF_METRICS.* buckets."
+    ),
+    "PERF_METRICS.BACKEND_BOUND": (
+        "Fraction of pipeline slots stalled on the backend.",
+        "TMA L1 bucket. High when execution units, memory, or scheduling resources are the bottleneck. Split further into `Memory_Bound` and `Core_Bound` at L2 (which use different formulas, not PERF_METRICS.*).",
+        "perf reports as `topdown-be-bound`."
+    ),
+    "PERF_METRICS.BAD_SPECULATION": (
+        "Fraction of pipeline slots wasted on mis-speculated work.",
+        "TMA L1 bucket. Includes branch-mispredict recovery and machine clears (SMC, memory ordering, TSX aborts).",
+        "perf reports as `topdown-bad-spec`."
+    ),
+    "PERF_METRICS.RETIRING": (
+        "Fraction of pipeline slots that successfully retired.",
+        "TMA L1 bucket. Higher is generally better (more useful work per cycle) — but high values combined with low IPC can indicate microcode-heavy code (e.g. gathers, denormal FP).",
+        "perf reports as `topdown-retiring`."
+    ),
+    "PERF_METRICS.BRANCH_MISPREDICTS": (
+        "L2 refinement of Bad_Speculation — fraction from branch mispredicts.",
+        "Only the mispredict portion; complement is `Machine_Clears`. Available on newer parts as an L2 PERF_METRICS extension.",
+        "perf reports as `topdown-br-mispredict`."
+    ),
+    "PERF_METRICS.FETCH_LATENCY": (
+        "L2 refinement of Frontend_Bound — fraction spent waiting for fetch.",
+        "Distinguishes latency-bound frontend stalls (iCache/iTLB misses, branch mispredict recovery) from bandwidth-bound frontend stalls (decode throughput).",
+        "perf reports as `topdown-fetch-lat`."
+    ),
+    "PERF_METRICS.HEAVY_OPERATIONS": (
+        "L2 refinement of Retiring — fraction from complex instructions.",
+        "Includes microcode-sequenced uops (gathers, string ops, page-walks, denormal FP). Sibling `Light_Operations` = simple retiring uops.",
+        "perf reports as `topdown-heavy-ops`."
+    ),
+    "PERF_METRICS.MEMORY_BOUND": (
+        "L2 refinement of Backend_Bound — fraction stalled on memory.",
+        "Available on some newer parts. Sibling `Core_Bound` (=BE−MEM) captures execution-resource stalls.",
+        "perf reports as `topdown-mem-bound`."
+    ),
+    "FREERUN_PKG_ENERGY_STATUS": (
+        "Package-wide energy consumed since boot, in RAPL units.",
+        "Free-running MSR read via the RAPL PMU. Delta over a measurement window gives package power. Used by metrics like `Info_PKG_Energy` or `PowerLicense` computations.",
+        "Use `perf stat -e power/energy-pkg/` (or `-e msr/package_energy/`)."
+    ),
+    "FREERUN_DRAM_ENERGY_STATUS": (
+        "DRAM energy consumed since boot, in RAPL units.",
+        "Same mechanism as PKG_ENERGY but for the DIMMs. Not always exposed — depends on RAPL domain support on the SKU.",
+        "Use `perf stat -e power/energy-ram/` when present."
+    ),
+    "TSC": (
+        "Time Stamp Counter — wall-clock reference in CPU cycles.",
+        "Read via `rdtsc`. On modern Intel it ticks at the platform reference frequency, independent of DVFS. Used as a denominator when converting event counts to per-time-unit rates.",
+        "perf exposes as `cycles` when `-e cycles` is used with `--user-regs` on some kernels; otherwise `cpu/event=0x3c,umask=0x0/` reads the actual clock counter (`CPU_CLK_UNHALTED.REF_TSC`)."
+    ),
+    "TOPDOWN.SLOTS": (
+        "Total pipeline slots issued (the TMA denominator).",
+        "One fixed-function counter that ticks every issue slot per cycle × slot-width. All TMA L1 fractions are counts divided by this. Exposed as `slots` in perf.",
+        "perf: `-e slots` (must appear in the same group as the PERF_METRICS.* events)."
+    ),
+}
+
+
+def get_pseudo_event(name: str):
+    """Return (brief, detail, source) for a pseudo-event, or None."""
+    return PSEUDO_EVENTS.get(name)
+
+
 def find_acronyms(text: str) -> list:
     """Return list of (acronym, expansion, gloss) found in the description text.
 

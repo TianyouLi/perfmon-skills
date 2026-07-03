@@ -17,7 +17,7 @@ from typing import Optional
 from ..core.arch_map import ArchMap, Cell, SubComponent
 from ..core.catalog import PlatformCatalog
 from ..core.formula import expand_formula
-from ..core.glossary import find_acronyms, note_for_path
+from ..core.glossary import find_acronyms, get_pseudo_event, note_for_path
 from ..core.tma_tree import TmaTree
 from .perf_examples import build_examples
 
@@ -56,6 +56,11 @@ header .stat { color: var(--muted); }
 header .stat b { color: var(--ink); margin-right: 0.3rem; }
 header .stat.mapped b { color: var(--mapped); }
 header .stat.unmapped b { color: var(--unmapped); }
+header .stats-label {
+  font-size: 0.7rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  margin-right: 0.2rem; align-self: center;
+}
 
 .search-box {
   position: relative; flex: 0 0 340px; align-self: flex-start;
@@ -183,6 +188,15 @@ ul.event-list li.selected { background: var(--selected); color: white; }
 .event-detail .name {
   font-family: ui-monospace, "SF Mono", Monaco, monospace;
   font-size: 0.95rem; color: var(--accent); margin: 0 0 0.5rem;
+}
+.pseudo-badge {
+  display: inline-block; margin-left: 0.5rem;
+  background: rgba(148, 163, 184, 0.15); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.05rem 0.5rem;
+  font-family: inherit; font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  vertical-align: middle;
 }
 
 .detail-section {
@@ -329,6 +343,38 @@ ul.event-list li.selected { background: var(--selected); color: white; }
   padding: 0.25rem 0.85rem 0.1rem;
   text-transform: uppercase; letter-spacing: 0.08em;
 }
+
+/* (?) help tooltip — pure CSS */
+.help-tip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 0.4rem;
+  background: var(--subbox); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 50%;
+  font-size: 10px; font-weight: 600; font-family: inherit;
+  cursor: help;
+  position: relative;
+  user-select: none;
+}
+.help-tip:hover { background: var(--accent); color: #0f172a; border-color: var(--accent); }
+.help-tip .tip {
+  position: absolute; top: 22px; left: 0;
+  min-width: 260px; max-width: 380px;
+  background: #0b1220;
+  color: var(--ink);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.75rem; font-weight: 400; line-height: 1.5;
+  text-transform: none; letter-spacing: normal;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  opacity: 0; visibility: hidden;
+  transition: opacity 0.15s;
+  pointer-events: none;
+  white-space: normal; text-align: left;
+}
+.help-tip:hover .tip, .help-tip:focus .tip { opacity: 1; visibility: visible; }
+.help-tip .tip b { color: var(--accent); }
 /* Used-by-metrics section in event detail */
 .usedby {
   display: flex; flex-wrap: wrap; gap: 0.3rem;
@@ -514,9 +560,40 @@ PAGE_JS = """
   function wireEventListItems(){
     qa('#pane-list li[data-ev]').forEach(function(li){
       li.addEventListener('click', function(){
-        selectEvent(decodeURIComponent(li.getAttribute('data-ev')));
+        var name = decodeURIComponent(li.getAttribute('data-ev'));
+        // On the Metrics tab (viewing a metric's feeders), clicking an event
+        // name should jump to the Events tab and highlight it on the SVG.
+        // On the Events tab, keep the current behavior (just show detail).
+        if(state.tab === 'metrics'){
+          jumpToEvent(name);
+        } else {
+          selectEvent(name);
+        }
       });
     });
+  }
+
+  function jumpToEvent(name){
+    // Switch to the Events tab, highlight the event's uarch path, then
+    // select the event itself so the SVG box lights up and the detail pane
+    // populates.
+    if(!EVENT_INDEX) buildEventIndex();
+    var entry = EVENT_INDEX && EVENT_INDEX[name];
+    setTab('events');
+    if(entry){
+      selectPath(entry.path.join('/'));
+      selectEvent(name);
+      var el = q('[data-path="'+entry.path.join('/')+'"]');
+      if(el && el.scrollIntoView){
+        try { el.scrollIntoView({block: 'center', inline: 'center', behavior: 'smooth'}); }
+        catch(e){}
+      }
+    } else if(ARCH.events[name]){
+      // Pseudo-event or something not in the uarch map: still show its detail.
+      state.eventName = name; state.metric = null; state.path = null;
+      renderList();
+      renderDetail();
+    }
   }
 
   function selectEvent(name){
@@ -564,10 +641,16 @@ PAGE_JS = """
   function renderEventDetail(pane, ev){
     if(!ev){ pane.innerHTML = '<div class="empty">Unknown event.</div>'; return; }
     var parts = ['<div class="event-detail">'];
-    parts.push('<div class="name">'+escapeHtml(ev.name)+'</div>');
+    var kindBadge = ev.pseudo
+        ? '<span class="pseudo-badge">pseudo-event</span>'
+        : '';
+    parts.push('<div class="name">'+escapeHtml(ev.name)+kindBadge+'</div>');
     parts.push('<dl>');
     if(ev.brief){ parts.push('<dt>Brief</dt><dd class="desc">'+escapeHtml(ev.brief)+'</dd>'); }
-    if(ev.public && ev.public !== ev.brief){ parts.push('<dt>Public</dt><dd class="desc">'+escapeHtml(ev.public)+'</dd>'); }
+    if(ev.public && ev.public !== ev.brief){
+      parts.push('<dt>'+(ev.pseudo ? 'Detail' : 'Public')+'</dt>');
+      parts.push('<dd class="desc">'+escapeHtml(ev.public)+'</dd>');
+    }
     if(ev.unit){ parts.push('<dt>Unit</dt><dd>'+escapeHtml(ev.unit)+'</dd>'); }
     if(ev.code){ parts.push('<dt>Event code</dt><dd>'+escapeHtml(ev.code)+'</dd>'); }
     if(ev.umask){ parts.push('<dt>UMask</dt><dd>'+escapeHtml(ev.umask)+'</dd>'); }
@@ -578,7 +661,7 @@ PAGE_JS = """
 
     if(ev.note){
       parts.push('<div class="detail-section">');
-      parts.push('<h4>What this means</h4>');
+      parts.push('<h4>'+(ev.pseudo ? 'How to read it in perf' : 'What this means')+'</h4>');
       parts.push('<div class="note">'+escapeHtml(ev.note)+'</div>');
       parts.push('</div>');
     }
@@ -714,20 +797,7 @@ PAGE_JS = """
     qa('#pane-detail .feeder[data-jump-event]').forEach(function(el){
       el.addEventListener('click', function(){
         var name = decodeURIComponent(el.getAttribute('data-jump-event'));
-        // Jump to the event: switch to events tab, select its uarch path, then event.
-        var idx = EVENT_INDEX && EVENT_INDEX[name];
-        if(idx){
-          setTab('events');
-          selectPath(idx.path.join('/'));
-          selectEvent(name);
-        } else {
-          // Event not in the uarch map (e.g. PERF_METRICS.*) — just show its
-          // detail if we have it, or a hint otherwise.
-          if(ARCH.events[name]){
-            state.eventName = name; state.metric = null; state.path = null;
-            renderDetail();
-          }
-        }
+        jumpToEvent(name);
       });
     });
   }
@@ -1826,6 +1896,34 @@ def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None)
             if ev_name in events:
                 events[ev_name]["used_by"] = sorted(set(mlist))
 
+        # Synthesize pseudo-events (PERF_METRICS.*, RAPL, TSC, TOPDOWN.SLOTS)
+        # so clicking them from a metric's feeder list opens a useful detail
+        # page instead of a dead link. These aren't in perfmon's events JSON —
+        # they're kernel-exposed synthetic counters.
+        for ev_name, mlist in events_to_metrics.items():
+            if ev_name in events:
+                continue
+            pseudo = get_pseudo_event(ev_name)
+            if pseudo is None:
+                continue
+            brief, detail, source = pseudo
+            events[ev_name] = {
+                "name": ev_name,
+                "brief": brief,
+                "public": detail,
+                "unit": "",
+                "code": "",
+                "umask": "",
+                "counter": "",
+                "precise": "0",
+                "sample": "",
+                "note": source,
+                "acronyms": [],
+                "perf": None,
+                "used_by": sorted(set(mlist)),
+                "pseudo": True,
+            }
+
         # Build the TMA tree (may be empty on platforms like CWF)
         tree = TmaTree(catalog)
         tma_roots = [_serialize_tma_node(r) for r in tree.roots]
@@ -1889,6 +1987,16 @@ def render_page(arch_map: ArchMap,
     n_metrics = len(payload["metrics"])
     n_events = len(payload["events"])
 
+    # Metric distribution — count each category from the metrics list so it
+    # stays consistent with the payload rather than re-derived at render time.
+    n_tma_tree = sum(1 for m in payload["metrics"].values()
+                     if m.get("category") == "TMA"
+                     and not m["name"].startswith("Bottleneck_")
+                     and not m["name"].startswith("Info_"))
+    n_bottleneck = len(payload["bottlenecks"])
+    n_info = sum(len(v) for v in payload["info_groups"].values())
+    n_non_tma = sum(len(v) for v in payload["non_tma_categories"].values())
+
     # TMA tree SVG (may be an empty placeholder for CWF etc.)
     tma_svg = ""
     if catalog is not None:
@@ -1909,11 +2017,20 @@ def render_page(arch_map: ArchMap,
       <h1>{html.escape(display)} — Architecture Event Map</h1>
       <div class="subtitle">Click a component or metric on the left, or search across both.</div>
       <div class="stats">
-        <div class="stat"><b>{total}</b>events total</div>
+        <span class="stats-label">Events:</span>
+        <div class="stat"><b>{total}</b>total</div>
         <div class="stat mapped"><b>{mapped}</b>mapped</div>
         <div class="stat unmapped"><b>{unmapped}</b>unmapped</div>
         <div class="stat"><b>{arch_map.total_core}</b>core</div>
         <div class="stat"><b>{arch_map.total_uncore}</b>uncore</div>
+      </div>
+      <div class="stats">
+        <span class="stats-label">Metrics:</span>
+        <div class="stat"><b>{n_metrics}</b>total</div>
+        <div class="stat"><b>{n_tma_tree}</b>TMA</div>
+        <div class="stat"><b>{n_bottleneck}</b>Bottleneck</div>
+        <div class="stat"><b>{n_info}</b>Info</div>
+        {'<div class="stat"><b>' + str(n_non_tma) + '</b>flat</div>' if n_non_tma else ''}
       </div>
     </div>
     <div class="search-box">
@@ -1922,8 +2039,8 @@ def render_page(arch_map: ArchMap,
     </div>
   </div>
   <div class="tabs">
-    <div class="tab active" data-tab="events">Events <span class="badge">{n_events}</span></div>
-    <div class="tab" data-tab="metrics">Metrics <span class="badge">{n_metrics}</span></div>
+    <div class="tab active" data-tab="events">Events <span class="badge">{n_events}</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Hardware PMU events</b> — the raw counters exposed by the CPU. Each has an EventCode+UMask that programs a physical counter register. Grouped here by which uarch block generates them (Frontend / Backend / Memory / CHA / IMC / …).</span></span></div>
+    <div class="tab" data-tab="metrics">Metrics <span class="badge">{n_metrics}</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Derived measurements</b> — arithmetic formulas over one or more events that produce a meaningful number (IPC, DRAM bandwidth, L2 miss rate, TMA slot fractions). Comes from Intel's <code>*_metrics.json</code>. Includes TMA nodes, bottleneck aggregates, and standalone info metrics.</span></span></div>
   </div>
 </header>
 
@@ -1941,19 +2058,19 @@ def render_page(arch_map: ArchMap,
     </div>
     <div class="view" id="view-metrics">
       <div class="diagram-block tma-block">
-        <h2>TMA Hierarchy</h2>
+        <h2>TMA Hierarchy<span class="help-tip" tabindex="0">?<span class="tip"><b>Top-down Microarchitecture Analysis</b> — Intel's structured methodology for classifying every pipeline slot. L1 has four buckets (Retiring / Bad-Spec / Frontend-Bound / Backend-Bound) whose fractions sum to 100%. Deeper levels drill into each root: e.g. Backend_Bound → Memory_Bound → DRAM_Bound. Nodes with a ⚑ carry an official <em>bottleneck threshold</em> (e.g. "flagged if &gt; 20%") — use them to decide where to drill next.</span></span></h2>
         <div class="tree-scroll">{tma_svg}</div>
       </div>
       <details class="subblock" id="bottleneck-block">
-        <summary>Bottleneck aggregates <span class="badge" id="bottleneck-count">0</span></summary>
+        <summary>Bottleneck aggregates <span class="badge" id="bottleneck-count">0</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Cross-cutting summary metrics</b> that combine multiple TMA leaves into a single number. e.g. <code>Bottleneck_Memory_Data_TLBs</code> rolls together load-side and store-side TLB stalls from different subtrees. Handy when you want <em>one</em> number to describe "how much of the workload is X."</span></span></summary>
         <ul class="metric-list" id="bottleneck-list"></ul>
       </details>
       <details class="subblock" id="info-block">
-        <summary>Info metrics <span class="badge" id="info-count">0</span></summary>
+        <summary>Info metrics <span class="badge" id="info-count">0</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Standalone observability metrics</b> — not part of the TMA tree, no thresholds. IPC, CPI, GFLOPS, cache-hit rates, branch statistics, etc. Grouped by their <code>MetricGroup</code> prefix (Mem / Fed / Flops / Branches / …). These answer "what is my workload doing?" rather than "where is it stalling?"</span></span></summary>
         <div id="info-groups"></div>
       </details>
       <details class="subblock" id="nontma-block">
-        <summary>Metrics (no TMA hierarchy) <span class="badge" id="nontma-count">0</span></summary>
+        <summary>Metrics (no TMA hierarchy) <span class="badge" id="nontma-count">0</span><span class="help-tip" tabindex="0">?<span class="tip">This platform's perfmon JSON does not (yet) define a TMA tree. Instead, metrics are grouped by their <code>Category</code> field (Freq / BW / IO / NUMA / …). Common on newer E-core-only servers where Intel has released event data but not yet the full TMA hierarchy.</span></span></summary>
         <div id="nontma-groups"></div>
       </details>
     </div>

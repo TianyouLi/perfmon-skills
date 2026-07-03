@@ -100,3 +100,22 @@ def test_tma_tree_children_are_ordered_by_level():
     be = next(r for r in p["tma_roots"] if r["name"] == "Backend_Bound")
     child_names = {c["name"] for c in be["children"]}
     assert child_names == {"Core_Bound", "Memory_Bound"}
+
+
+def test_pseudo_events_synthesized():
+    """PERF_METRICS.* and TSC are referenced by metrics but not in perfmon's
+    events JSON — they should appear as synthetic entries with pseudo=True."""
+    p = _payload("GNR")
+    assert "PERF_METRICS.FRONTEND_BOUND" in p["events"]
+    pf = p["events"]["PERF_METRICS.FRONTEND_BOUND"]
+    assert pf.get("pseudo") is True
+    assert "fixed-function counter" in pf["public"] or "TMA" in pf["brief"]
+    # Used-by should be populated for pseudo events too
+    assert "Frontend_Bound" in pf["used_by"]
+
+
+def test_pseudo_events_have_no_perf_block():
+    """Pseudo events don't get regular perf stat/record snippets."""
+    p = _payload("GNR")
+    pf = p["events"]["PERF_METRICS.BACKEND_BOUND"]
+    assert pf["perf"] is None
