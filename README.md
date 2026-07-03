@@ -2,6 +2,8 @@
 
 Performance analysis toolkit built on [Intel perfmon](https://github.com/intel/perfmon) data. Provides CLI tools and Claude Code slash commands for streamlined performance investigation on Intel platforms.
 
+**Live arch-map browser:** https://tianyouli.github.io/perfmon-skills/ — interactive event and metric explorer for GNR and CWF, rebuilt on every push to `main`.
+
 ## What it does
 
 - **Event/metric lookup** — Search 2600+ PMU events and 300+ TMA metrics across 50+ Intel platforms
@@ -146,6 +148,10 @@ Wrote gnr.html (1,548,432 bytes)
 Open the file in a browser: clickable SVG on the left (core pipeline + uncore/SoC),
 event list and full details (with acronym expansions and ready-to-run `perf stat`/`perf record`
 commands) on the right. Search box in the header finds any event by name.
+
+The same output is published for GNR and CWF at **https://tianyouli.github.io/perfmon-skills/**,
+rebuilt on every push to `main` via `.github/workflows/pages.yml`. If you fork this repo and
+want your own live copy: enable Pages in *Settings → Pages → Source: GitHub Actions*.
 
 ### Visualize decision trace
 
