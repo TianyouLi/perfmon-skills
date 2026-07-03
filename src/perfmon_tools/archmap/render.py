@@ -620,7 +620,9 @@ text.node-count { fill: var(--accent); font-weight: 600; pointer-events: none; }
 /* When compare mode is on, the "N events" corner label is replaced by
    a "+N ~M -K" diff label (injected by JS as text.node-diff). Hiding
    the count in advance avoids a flash of the wrong value. */
-body.cmp-on text.node-count { display: none; }
+/* Hide the plain "N events" corner label ONLY when a sibling diff label
+   has been injected. Boxes with no diff activity keep their normal count. */
+body.cmp-on [data-path]:has(> text.node-diff) > text.node-count { display: none; }
 /* Hide the plain "Lx ⚑" TMA label whenever there is a sibling diff label
    (injected by applyTmaDiffLabels). Nodes with no diff activity keep the
    plain label. */
@@ -631,6 +633,27 @@ text.node-diff { fill: var(--muted); font-weight: 700; pointer-events: none; }
 text.node-diff .diff-new { fill: var(--mapped); }
 text.node-diff .diff-chg { fill: #fbbf24; }
 text.node-diff .diff-rem { fill: var(--unmapped); }
+/* Header-badge coloured spans (Bottleneck/Info/TMA/Core/Uncore) */
+.diagram-block h2 .badge .diff-new,
+.subblock > summary .badge .diff-new { color: var(--mapped); }
+.diagram-block h2 .badge .diff-chg,
+.subblock > summary .badge .diff-chg { color: #fbbf24; }
+.diagram-block h2 .badge .diff-rem,
+.subblock > summary .badge .diff-rem { color: var(--unmapped); }
+.diagram-block h2 .badge .diff-zero,
+.subblock > summary .badge .diff-zero { color: var(--muted); opacity: 0.6; }
+.diagram-block h2 .badge:has(.diff-new),
+.diagram-block h2 .badge:has(.diff-chg),
+.diagram-block h2 .badge:has(.diff-rem),
+.diagram-block h2 .badge:has(.diff-zero),
+.subblock > summary .badge:has(.diff-new),
+.subblock > summary .badge:has(.diff-chg),
+.subblock > summary .badge:has(.diff-rem),
+.subblock > summary .badge:has(.diff-zero) {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--ink);
+}
 
 .group-label { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }
 .flow-label { fill: var(--muted); font-size: 10px; font-style: italic; }
@@ -737,6 +760,7 @@ PAGE_JS = """
     document.body.classList.toggle('cmp-on', compareOn);
     q('#compare-strip').style.display = compareOn ? 'block' : 'none';
     if(compareOn) renderCompareStrip();
+    updateDiagramBadges();
     input.addEventListener('change', function(e){
       compareOn = e.target.checked;
       document.body.classList.toggle('cmp-on', compareOn);
@@ -750,7 +774,55 @@ PAGE_JS = """
       renderTmaTree();
       applyTmaDiffLabels();
       renderRemovedSections();
+      updateDiagramBadges();
     });
+  }
+
+  // Populate the "Core Pipeline" / "Uncore / SoC" section-title badges.
+  // In compare mode: sum activity across each section's cells, showing
+  // "0" (muted) when nothing changed. Off compare mode: show total event
+  // count for the section.
+  function updateDiagramBadges(){
+    var coreEl = q('#core-count');
+    var uncoreEl = q('#uncore-count');
+    if(!coreEl || !uncoreEl) return;
+    if(compareOn && ARCH.diff && ARCH.diff.cell_rollup){
+      var rollup = ARCH.diff.cell_rollup;
+      function tally(ids){
+        var t = {new: 0, changed: 0, removed: 0};
+        (ids || []).forEach(function(id){
+          var r = rollup[id];
+          if(!r) return;
+          t.new += r.new || 0;
+          t.changed += r.changed || 0;
+          t.removed += r.removed || 0;
+        });
+        return t;
+      }
+      function fmt(t){
+        var parts = [];
+        if(t.new > 0)     parts.push('<span class="diff-new">+' + t.new + '</span>');
+        if(t.changed > 0) parts.push('<span class="diff-chg">~' + t.changed + '</span>');
+        if(t.removed > 0) parts.push('<span class="diff-rem">-' + t.removed + '</span>');
+        return parts.length ? parts.join(' ') : '<span class="diff-zero">0</span>';
+      }
+      coreEl.innerHTML = fmt(tally(ARCH.diff.core_cell_ids));
+      uncoreEl.innerHTML = fmt(tally(ARCH.diff.uncore_cell_ids));
+    } else {
+      // Not in compare mode — show total event count per section.
+      function eventsIn(ids){
+        var n = 0;
+        (ids || []).forEach(function(id){
+          var c = ARCH.cells[id];
+          if(c) n += c.count || 0;
+        });
+        return n;
+      }
+      var coreIds = (ARCH.diff && ARCH.diff.core_cell_ids) || Object.keys(ARCH.cells);
+      var uncoreIds = (ARCH.diff && ARCH.diff.uncore_cell_ids) || [];
+      coreEl.textContent = eventsIn(coreIds);
+      uncoreEl.textContent = eventsIn(uncoreIds);
+    }
   }
 
   function renderCompareStrip(){
@@ -819,9 +891,10 @@ PAGE_JS = """
   }
 
   function applyStatusToDom(){
-    // For each uarch box, replace its "N events" corner label with a
-    // "+N ~M -K" diff label (injected as text.node-diff at the same
-    // position). The count itself is hidden via CSS while body.cmp-on.
+    // For each uarch box that has diff activity, replace its "N events"
+    // corner label with a "+N ~M -K" diff summary at the same position.
+    // Boxes with zero activity keep their normal "N events" label —
+    // CSS hides the plain count only when a sibling .node-diff exists.
     if(!ARCH.diff || !ARCH.diff.path_rollup) return;
     var rollup = ARCH.diff.path_rollup;
     // Idempotent — strip prior arch-map injections only (leave TMA-tree
@@ -848,7 +921,6 @@ PAGE_JS = """
       badge.setAttribute('x', count.getAttribute('x'));
       badge.setAttribute('y', count.getAttribute('y'));
       badge.setAttribute('text-anchor', 'end');
-      // Same font as the count so the swap is visually stable.
       badge.setAttribute('style', count.getAttribute('style') || '');
       bits.forEach(function(b, i){
         var t = document.createElementNS(NS, 'tspan');
@@ -3050,6 +3122,8 @@ def _build_diff(current: PlatformCatalog,
     ev_to_cell = {}
     for cell in list(cur_am.core_cells) + list(cur_am.uncore_cells):
         _leaf_paths(cell, (cell.id,), ev_to_cell)
+    core_cell_ids = [c.id for c in cur_am.core_cells]
+    uncore_cell_ids = [c.id for c in cur_am.uncore_cells]
 
     # Bucket the "removed" events by why they went away — many are just
     # unit renames (M2M → B2CMI on GNR). Users care about *genuine* removals,
@@ -3232,6 +3306,8 @@ def _build_diff(current: PlatformCatalog,
         "cell_rollup": cell_rollup,
         "path_rollup": path_rollup,
         "tma_rollup": tma_rollup,
+        "core_cell_ids": core_cell_ids,
+        "uncore_cell_ids": uncore_cell_ids,
         "events_changes": events_changes,
         "metrics_changes": metrics_changes,
     }
@@ -3491,11 +3567,11 @@ def render_page(arch_map: ArchMap,
   <div class="left-col">
     <div class="view active" id="view-events">
       <div class="diagram-block">
-        <h2>Core Pipeline</h2>
+        <h2>Core Pipeline <span class="badge" id="core-count">0</span></h2>
         {core_svg}
       </div>
       <div class="diagram-block">
-        <h2>Uncore / SoC</h2>
+        <h2>Uncore / SoC <span class="badge" id="uncore-count">0</span></h2>
         {uncore_svg}
       </div>
       <details class="subblock" id="removed-events-block" style="display:none;">
