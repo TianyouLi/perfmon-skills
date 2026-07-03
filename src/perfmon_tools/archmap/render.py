@@ -383,6 +383,14 @@ body.cmp-on ul.metric-list li[data-status="changed"] { border-left: 3px solid #f
 body.cmp-on [data-metric][data-status="new"] > rect.cell-frame { stroke: var(--mapped); }
 body.cmp-on [data-metric][data-status="changed"] > rect.cell-frame { stroke: #fbbf24; }
 
+/* Corner badge injected into uarch boxes during compare mode. */
+.cmp-svg-badge { font-family: ui-monospace, monospace; font-size: 10px; font-weight: 700; pointer-events: none; }
+.cmp-svg-new { fill: var(--mapped); }
+.cmp-svg-chg { fill: #fbbf24; }
+.cmp-svg-rem { fill: var(--unmapped); }
+/* Subtle accent-coloured outline on boxes that have diff activity */
+body.cmp-on [data-path].cmp-box-outline > rect.cell-frame { stroke: var(--accent); }
+
 .status-badge {
   display: inline-block; margin-left: 0.35rem;
   padding: 0.02rem 0.35rem; border-radius: 8px;
@@ -629,11 +637,20 @@ PAGE_JS = """
     if(!ARCH.diff){ wrap.style.display = 'none'; return; }
     q('#compare-baseline').textContent = ARCH.diff.baseline_name || ARCH.diff.baseline;
     wrap.style.display = 'inline-flex';
-    q('#compare-toggle').addEventListener('change', function(e){
+    var input = q('#compare-toggle');
+    // Sync JS state with the checkbox's initial (checked) attribute so the
+    // diff decorations render on first paint without a user interaction.
+    compareOn = input.checked;
+    document.body.classList.toggle('cmp-on', compareOn);
+    q('#compare-strip').style.display = compareOn ? 'block' : 'none';
+    if(compareOn) renderCompareStrip();
+    input.addEventListener('change', function(e){
       compareOn = e.target.checked;
       document.body.classList.toggle('cmp-on', compareOn);
       q('#compare-strip').style.display = compareOn ? 'block' : 'none';
       if(compareOn){ renderCompareStrip(); applyStatusToDom(); }
+      else { qa('.cmp-svg-badge').forEach(function(el){ el.remove(); });
+             qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); }); }
       // Repaint lists + removed sections so state matches the toggle.
       renderList();
       renderMetricsSidebar();
@@ -708,11 +725,59 @@ PAGE_JS = """
   }
 
   function applyStatusToDom(){
-    // For the events uarch SVG — no per-event nodes exist there (events are
-    // aggregated into cells), so nothing to decorate. The uarch cells
-    // themselves get a subtle border colour if their rollup contains new
-    // events, but that's optional; skip for now to keep the SVG clean.
-    // TMA nodes and lists get repainted on renderTmaTree() / renderList().
+    // Inject a small "+N ~M -K" diff badge into every uarch box that has
+    // activity vs the baseline. Uses ARCH.diff.path_rollup keyed by the
+    // node's data-path attribute so nested sub-boxes get their own tally.
+    if(!ARCH.diff || !ARCH.diff.path_rollup) return;
+    var rollup = ARCH.diff.path_rollup;
+    // Strip any prior badges before recomputing (idempotent).
+    qa('.cmp-svg-badge').forEach(function(el){ el.remove(); });
+    qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); });
+    qa('[data-path]').forEach(function(g){
+      var p = g.getAttribute('data-path');
+      var r = rollup[p];
+      if(!r) return;
+      var activity = (r["new"]||0) + (r["changed"]||0) + (r["removed"]||0);
+      if(activity === 0) return;
+      // Determine the box's rect so we can anchor the badge to its top-right.
+      var rect = g.querySelector(':scope > rect.cell-frame');
+      if(!rect) return;
+      var rx = parseFloat(rect.getAttribute('x'));
+      var ry = parseFloat(rect.getAttribute('y'));
+      var rw = parseFloat(rect.getAttribute('width'));
+      var rh = parseFloat(rect.getAttribute('height'));
+      // Build "+N ~M -K" text (omit zero components).
+      var bits = [];
+      if(r["new"] > 0)     bits.push({t: '+' + r["new"],     cls: 'new'});
+      if(r["changed"] > 0) bits.push({t: '~' + r["changed"], cls: 'chg'});
+      if(r["removed"] > 0) bits.push({t: '-' + r["removed"], cls: 'rem'});
+      if(!bits.length) return;
+      // Anchor to the top-right of the box, one line below the "N events"
+      // label (which sits at y=ry+font+4). Font sizes shrink at deeper
+      // depths so the offset picks the safer larger value.
+      var NS = 'http://www.w3.org/2000/svg';
+      var badge = document.createElementNS(NS, 'text');
+      badge.setAttribute('class', 'cmp-svg-badge');
+      badge.setAttribute('x', rx + rw - 4);
+      // Depth is exposed as data-depth by _render_node. Depth 1/2 use a
+      // ~24px title band; deeper have ~22px.
+      var d = parseInt(g.getAttribute('data-depth') || '1', 10);
+      var yOff = (d <= 1) ? 26 : (d === 2 ? 22 : 20);
+      badge.setAttribute('y', ry + yOff);
+      badge.setAttribute('text-anchor', 'end');
+      // Right-most first, then reverse-append so order in DOM matches read
+      // order left→right.
+      bits.forEach(function(b, i){
+        var t = document.createElementNS(NS, 'tspan');
+        t.setAttribute('class', 'cmp-svg-' + b.cls);
+        if(i > 0) t.setAttribute('dx', '4');
+        t.textContent = b.t;
+        badge.appendChild(t);
+      });
+      g.appendChild(badge);
+      // Also outline the box subtly so scanning is quick.
+      g.classList.add('cmp-box-outline');
+    });
   }
 
   function renderRemovedSections(){
@@ -1483,6 +1548,9 @@ PAGE_JS = """
       var el = q('[data-metric="'+cssEsc(state.metrics.metric)+'"]');
       if(el) el.classList.add('selected');
     }
+    // TMA nodes don't get path-based diff badges — the diff hooks in via
+    // per-node data-status (already handled during node emission). So no
+    // applyStatusToDom() call needed here.
   }
 
   function wireTmaClicks(){
@@ -1789,6 +1857,8 @@ PAGE_JS = """
     renderRemovedSections();
     renderList();
     renderDetail();
+    // If compare is on by default, decorate the SVGs now that they exist.
+    if(compareOn) applyStatusToDom();
   });
 })();
 """
@@ -2694,21 +2764,29 @@ def _build_diff(current: PlatformCatalog,
         else:
             new_buckets["genuinely_new"].append(name)
 
-    # Per-cell rollup for the summary strip. Uses the post-reclassification
-    # status so rename-in-disguise doesn't show up as "new" per cell.
-    cell_rollup = {}
+    # Per-path rollup: rolls each event's status up along its full path so
+    # the top-level cell, every subcomponent, and every sub-sub can render
+    # a diff badge. Key is the '/'-joined path (e.g. "coherence_llc",
+    # "coherence_llc/tor", "coherence_llc/tor/ia").
+    cell_rollup = {}   # top-level for the summary strip
+    path_rollup = {}   # every ancestor path
+
+    def _bump(path_key, status):
+        r = path_rollup.setdefault(
+            path_key,
+            {"new": 0, "changed": 0, "same": 0, "removed": 0},
+        )
+        r[status] += 1
+
     for name, status in events_status.items():
         path = ev_to_cell.get(name)
         if not path:
             continue
-        cell_id = path[0]
-        r = cell_rollup.setdefault(
-            cell_id,
-            {"new": 0, "changed": 0, "same": 0, "removed": 0},
-        )
-        r[status] += 1
-    # Only count *genuinely gone* events per cell (baseline classifier may
-    # not exist, so we skip cell attribution for removed-in-retired-units).
+        # Roll up to every ancestor prefix, including the leaf.
+        for i in range(1, len(path) + 1):
+            _bump("/".join(path[:i]), status)
+
+    # Genuinely-gone removed events: bucket by baseline classifier path.
     try:
         base_am = build_arch_map(baseline)
         base_ev_cells = {}
@@ -2717,13 +2795,14 @@ def _build_diff(current: PlatformCatalog,
     except ValueError:
         base_ev_cells = {}
     for name in removed_buckets["genuinely_gone"]:
-        path = base_ev_cells.get(name)
-        cell_id = path[0] if path else "unclassified"
-        r = cell_rollup.setdefault(
-            cell_id,
-            {"new": 0, "changed": 0, "same": 0, "removed": 0},
-        )
-        r["removed"] += 1
+        path = base_ev_cells.get(name, ("unclassified",))
+        for i in range(1, len(path) + 1):
+            _bump("/".join(path[:i]), "removed")
+
+    # Legacy top-level cell_rollup for the summary strip (unchanged callers).
+    for key, counts_dict in path_rollup.items():
+        if "/" not in key:
+            cell_rollup[key] = counts_dict
 
     counts = {
         "events": {
@@ -2759,6 +2838,7 @@ def _build_diff(current: PlatformCatalog,
         "metrics_removed": metrics_removed,
         "counts": counts,
         "cell_rollup": cell_rollup,
+        "path_rollup": path_rollup,
     }
 
 
@@ -2983,7 +3063,7 @@ def render_page(arch_map: ArchMap,
     <div class="tab active" data-tab="events">Events <span class="badge">{n_events}</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Hardware PMU events</b> — the raw counters exposed by the CPU. Each has an EventCode+UMask that programs a physical counter register. Grouped here by which uarch block generates them (Frontend / Backend / Memory / CHA / IMC / …).</span></span></div>
     <div class="tab" data-tab="metrics">Metrics <span class="badge">{n_metrics}</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Derived measurements</b> — arithmetic formulas over one or more events that produce a meaningful number (IPC, DRAM bandwidth, L2 miss rate, TMA slot fractions). Comes from Intel's <code>*_metrics.json</code>. Includes TMA nodes, bottleneck aggregates, and standalone info metrics.</span></span></div>
     <div class="compare-toggle-wrap"><label class="compare-toggle" id="compare-toggle-label" style="display:none;">
-      <input type="checkbox" id="compare-toggle"> Compare to <span id="compare-baseline">—</span>
+      <input type="checkbox" id="compare-toggle" checked> Compare to <span id="compare-baseline">—</span>
       <span class="help-tip" tabindex="0">?<span class="tip">When on, every event and metric is coloured by its status vs the immediate predecessor of the same core type: <b class="dot dot-new"></b> new since the baseline, <b class="dot dot-changed"></b> encoding/formula changed, unmarked = unchanged. Removed items appear in a dedicated section since they don't exist on the current platform's diagram.</span></span>
     </label></div>
   </div>
