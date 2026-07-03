@@ -2552,8 +2552,10 @@ def render_core_svg_pcore(cells: list) -> str:
     parts = [f'<svg viewBox="0 0 {canvas_w} {canvas_h}" width="{canvas_w}" height="{canvas_h}" role="img">']
     parts.append(_arrow_defs())
 
-    for cell, x, w in zip(row1, xs, row1_w):
-        svg, _, _ = _render_cell(x, y1, cell, cols_hint=2, force_width=w)
+    # Row 1: bottom-align each cell against row_bottom_1.
+    row_bottom_1 = y1 + row1_h
+    for cell, x, w, (_, ch) in zip(row1, xs, row1_w, row1_dims):
+        svg, _, _ = _render_cell(x, row_bottom_1 - ch, cell, cols_hint=2, force_width=w)
         parts.append(svg)
     parts.append('<g class="flow">')
     for i in range(3):
@@ -2562,44 +2564,50 @@ def render_core_svg_pcore(cells: list) -> str:
         )
     parts.append('</g>')
 
+    # Row 2: bad_spec + mem_l1 share row_bottom_2.
+    row2_h = max(bs_h, l1_h)
+    row_bottom_2 = y2 + row2_h
     bs_x = xs[2] + (row1_w[2] - bs_w) // 2
-    svg, _, _ = _render_cell(bs_x, y2, bad_spec, cols_hint=1)
+    bs_y = row_bottom_2 - bs_h
+    svg, _, _ = _render_cell(bs_x, bs_y, bad_spec, cols_hint=1)
     parts.append(svg)
     l1_x = xs[3] + (row1_w[3] - l1_w) // 2
-    svg, _, _ = _render_cell(l1_x, y2, mem_l1, cols_hint=2)
+    l1_y = row_bottom_2 - l1_h
+    svg, _, _ = _render_cell(l1_x, l1_y, mem_l1, cols_hint=2)
     parts.append(svg)
 
     parts.append('<g class="flow control">')
     parts.append(
-        f'<line x1="{xs[2] + row1_w[2]/2}" y1="{y1 + row1_h}" x2="{xs[2] + row1_w[2]/2}" y2="{y2 - 4}" marker-end="url(#arrow)"/>'
+        f'<line x1="{xs[2] + row1_w[2]/2}" y1="{row_bottom_1}" x2="{xs[2] + row1_w[2]/2}" y2="{bs_y - 4}" marker-end="url(#arrow)"/>'
     )
     parts.append(
-        f'<path d="M {bs_x} {y2 + bs_h/2} L 15 {y2 + bs_h/2} L 15 {y1 + row1_h/2} L {xs[0] - 4} {y1 + row1_h/2}" marker-end="url(#arrow)"/>'
+        f'<path d="M {bs_x} {bs_y + bs_h/2} L 15 {bs_y + bs_h/2} L 15 {y1 + row1_h/2} L {xs[0] - 4} {y1 + row1_h/2}" marker-end="url(#arrow)"/>'
     )
-    parts.append(f'<text x="20" y="{y1 + row1_h + 40}" class="flow-label">flush</text>')
+    parts.append(f'<text x="20" y="{row_bottom_1 + 40}" class="flow-label">flush</text>')
     parts.append('</g>')
 
     parts.append('<g class="flow">')
     ex_cx = xs[3] + row1_w[3] / 2
     parts.append(
-        f'<line x1="{ex_cx - 10}" y1="{y1 + row1_h}" x2="{ex_cx - 10}" y2="{y2 - 4}" marker-end="url(#arrow)"/>'
+        f'<line x1="{ex_cx - 10}" y1="{row_bottom_1}" x2="{ex_cx - 10}" y2="{l1_y - 4}" marker-end="url(#arrow)"/>'
     )
     parts.append(
-        f'<line x1="{ex_cx + 10}" y1="{y2 - 4}" x2="{ex_cx + 10}" y2="{y1 + row1_h}" marker-end="url(#arrow)"/>'
+        f'<line x1="{ex_cx + 10}" y1="{l1_y - 4}" x2="{ex_cx + 10}" y2="{row_bottom_1}" marker-end="url(#arrow)"/>'
     )
-    parts.append(f'<text x="{ex_cx + 20}" y="{(y1 + row1_h + y2)/2 + 4}" class="flow-label">ld/st</text>')
+    parts.append(f'<text x="{ex_cx + 20}" y="{(row_bottom_1 + l1_y)/2 + 4}" class="flow-label">ld/st</text>')
     parts.append('</g>')
 
+    # Row 3 (pcore): mem_l2 alone, below mem_l1.
     l2_x = l1_x + (l1_w - l2_w) // 2
     svg, _, _ = _render_cell(l2_x, y3, mem_l2, cols_hint=1)
     parts.append(svg)
     parts.append('<g class="flow">')
     l1_cx = l1_x + l1_w / 2
     parts.append(
-        f'<line x1="{l1_cx - 10}" y1="{y2 + l1_h}" x2="{l1_cx - 10}" y2="{y3 - 4}" marker-end="url(#arrow)"/>'
+        f'<line x1="{l1_cx - 10}" y1="{l1_y + l1_h}" x2="{l1_cx - 10}" y2="{y3 - 4}" marker-end="url(#arrow)"/>'
     )
     parts.append(
-        f'<line x1="{l1_cx + 10}" y1="{y3 - 4}" x2="{l1_cx + 10}" y2="{y2 + l1_h}" marker-end="url(#arrow)"/>'
+        f'<line x1="{l1_cx + 10}" y1="{y3 - 4}" x2="{l1_cx + 10}" y2="{l1_y + l1_h}" marker-end="url(#arrow)"/>'
     )
     parts.append('</g>')
 
@@ -2617,8 +2625,9 @@ def render_core_svg_pcore(cells: list) -> str:
     )
     parts.append('</g>')
 
+    # Misc: bottom-align against row_bottom_1.
     misc_x = xs[-1] + row1_w[-1] + gap
-    svg, _, _ = _render_cell(misc_x, y1, misc, cols_hint=1)
+    svg, _, _ = _render_cell(misc_x, row_bottom_1 - misc_h, misc, cols_hint=1)
     parts.append(svg)
     if unc.count > 0:
         svg, _, _ = _render_cell(misc_x, y2, unc, cols_hint=1)
@@ -2646,7 +2655,7 @@ def render_core_svg_ecore(cells: list) -> str:
     l1_w, l1_h = _cell_size(mem_l1, cols_hint=2)
     l2_w, l2_h = _cell_size(mem_l2, cols_hint=1)
     l3_w, l3_h = _cell_size(mem_l3, cols_hint=2)
-    misc_w, _  = _cell_size(misc, cols_hint=1)
+    misc_w, misc_h = _cell_size(misc, cols_hint=1)
 
     gap = 24
     left = 30
@@ -2663,8 +2672,11 @@ def render_core_svg_ecore(cells: list) -> str:
     parts = [f'<svg viewBox="0 0 {canvas_w} {canvas_h}" width="{canvas_w}" height="{canvas_h}" role="img">']
     parts.append(_arrow_defs())
 
-    for cell, x, w in zip(row1, xs, row1_w):
-        svg, _, _ = _render_cell(x, y1, cell, cols_hint=2, force_width=w)
+    # Row 1: bottom-align each cell against row_bottom_1 = y1 + row1_h.
+    # Short cells (e.g. fe_decode, be_execute) get placed lower so all bottoms line up.
+    row_bottom_1 = y1 + row1_h
+    for cell, x, w, (_, ch) in zip(row1, xs, row1_w, row1_dims):
+        svg, _, _ = _render_cell(x, row_bottom_1 - ch, cell, cols_hint=2, force_width=w)
         parts.append(svg)
     parts.append('<g class="flow">')
     for i in range(3):
@@ -2673,50 +2685,62 @@ def render_core_svg_ecore(cells: list) -> str:
         )
     parts.append('</g>')
 
+    # Row 2: bad_spec + mem_l1 share row_bottom_2 = y2 + max(bs_h, l1_h).
+    row2_h = max(bs_h, l1_h)
+    row_bottom_2 = y2 + row2_h
     bs_x = xs[2] + (row1_w[2] - bs_w) // 2
-    svg, _, _ = _render_cell(bs_x, y2, bad_spec, cols_hint=1)
+    bs_y = row_bottom_2 - bs_h
+    svg, _, _ = _render_cell(bs_x, bs_y, bad_spec, cols_hint=1)
     parts.append(svg)
     l1_x = xs[3] + (row1_w[3] - l1_w) // 2
-    svg, _, _ = _render_cell(l1_x, y2, mem_l1, cols_hint=2)
+    l1_y = row_bottom_2 - l1_h
+    svg, _, _ = _render_cell(l1_x, l1_y, mem_l1, cols_hint=2)
     parts.append(svg)
     parts.append('<g class="flow control">')
     parts.append(
-        f'<line x1="{xs[2] + row1_w[2]/2}" y1="{y1 + row1_h}" x2="{xs[2] + row1_w[2]/2}" y2="{y2 - 4}" marker-end="url(#arrow)"/>'
+        f'<line x1="{xs[2] + row1_w[2]/2}" y1="{row_bottom_1}" x2="{xs[2] + row1_w[2]/2}" y2="{bs_y - 4}" marker-end="url(#arrow)"/>'
     )
     parts.append(
-        f'<path d="M {bs_x} {y2 + bs_h/2} L 15 {y2 + bs_h/2} L 15 {y1 + row1_h/2} L {xs[0] - 4} {y1 + row1_h/2}" marker-end="url(#arrow)"/>'
+        f'<path d="M {bs_x} {bs_y + bs_h/2} L 15 {bs_y + bs_h/2} L 15 {y1 + row1_h/2} L {xs[0] - 4} {y1 + row1_h/2}" marker-end="url(#arrow)"/>'
     )
-    parts.append(f'<text x="20" y="{y1 + row1_h + 40}" class="flow-label">flush</text>')
+    parts.append(f'<text x="20" y="{row_bottom_1 + 40}" class="flow-label">flush</text>')
     parts.append('</g>')
 
     parts.append('<g class="flow">')
     ex_cx = xs[3] + row1_w[3] / 2
     parts.append(
-        f'<line x1="{ex_cx - 10}" y1="{y1 + row1_h}" x2="{ex_cx - 10}" y2="{y2 - 4}" marker-end="url(#arrow)"/>'
+        f'<line x1="{ex_cx - 10}" y1="{row_bottom_1}" x2="{ex_cx - 10}" y2="{l1_y - 4}" marker-end="url(#arrow)"/>'
     )
     parts.append(
-        f'<line x1="{ex_cx + 10}" y1="{y2 - 4}" x2="{ex_cx + 10}" y2="{y1 + row1_h}" marker-end="url(#arrow)"/>'
+        f'<line x1="{ex_cx + 10}" y1="{l1_y - 4}" x2="{ex_cx + 10}" y2="{row_bottom_1}" marker-end="url(#arrow)"/>'
     )
-    parts.append(f'<text x="{ex_cx + 20}" y="{(y1 + row1_h + y2)/2 + 4}" class="flow-label">ld/st</text>')
+    parts.append(f'<text x="{ex_cx + 20}" y="{(row_bottom_1 + l1_y)/2 + 4}" class="flow-label">ld/st</text>')
     parts.append('</g>')
 
+    # Row 3: mem_l2 + mem_l3 share row_bottom_3 = y3 + max(l2_h, l3_h).
+    row3_h = max(l2_h, l3_h)
+    row_bottom_3 = y3 + row3_h
     l2_x = l1_x
-    svg, _, _ = _render_cell(l2_x, y3, mem_l2, cols_hint=1)
+    l2_y = row_bottom_3 - l2_h
+    svg, _, _ = _render_cell(l2_x, l2_y, mem_l2, cols_hint=1)
     parts.append(svg)
     l3_x = l2_x + l2_w + 20
-    svg, _, _ = _render_cell(l3_x, y3, mem_l3, cols_hint=2)
+    l3_y = row_bottom_3 - l3_h
+    svg, _, _ = _render_cell(l3_x, l3_y, mem_l3, cols_hint=2)
     parts.append(svg)
     parts.append('<g class="flow">')
     parts.append(
-        f'<line x1="{l2_x + l2_w/2}" y1="{y2 + l1_h}" x2="{l2_x + l2_w/2}" y2="{y3 - 4}" marker-end="url(#arrow)"/>'
+        f'<line x1="{l2_x + l2_w/2}" y1="{l1_y + l1_h}" x2="{l2_x + l2_w/2}" y2="{l2_y - 4}" marker-end="url(#arrow)"/>'
     )
     parts.append(
-        f'<line x1="{l2_x + l2_w}" y1="{y3 + l2_h/2}" x2="{l3_x - 4}" y2="{y3 + l2_h/2}" marker-end="url(#arrow)"/>'
+        f'<line x1="{l2_x + l2_w}" y1="{l2_y + l2_h/2}" x2="{l3_x - 4}" y2="{l2_y + l2_h/2}" marker-end="url(#arrow)"/>'
     )
     parts.append('</g>')
 
+    # Misc column: bottom-align against row_bottom_1 too so misc sits at the
+    # same baseline as the pipeline row rather than floating at its top.
     misc_x = xs[-1] + row1_w[-1] + gap
-    svg, _, _ = _render_cell(misc_x, y1, misc, cols_hint=1)
+    svg, _, _ = _render_cell(misc_x, row_bottom_1 - misc_h, misc, cols_hint=1)
     parts.append(svg)
     if unc.count > 0:
         svg, _, _ = _render_cell(misc_x, y2, unc, cols_hint=1)
