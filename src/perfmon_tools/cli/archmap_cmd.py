@@ -62,7 +62,11 @@ def run(args):
         _print_text(arch_map, pinfo.name)
         return
 
-    html = render_page(arch_map, platform_display=f"{pinfo.name} ({pinfo.shortname})")
+    html = render_page(
+        arch_map,
+        platform_display=f"{pinfo.name} ({pinfo.shortname})",
+        catalog=catalog,
+    )
     if args.out == "-":
         sys.stdout.write(html)
     else:

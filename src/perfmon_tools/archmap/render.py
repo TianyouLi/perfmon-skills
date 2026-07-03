@@ -15,7 +15,10 @@ import json
 from typing import Optional
 
 from ..core.arch_map import ArchMap, Cell, SubComponent
+from ..core.catalog import PlatformCatalog
+from ..core.formula import expand_formula
 from ..core.glossary import find_acronyms, note_for_path
+from ..core.tma_tree import TmaTree
 from .perf_examples import build_examples
 
 
@@ -234,6 +237,111 @@ ul.event-list li.selected { background: var(--selected); color: white; }
 .perf-notes { font-size: 0.75rem; color: var(--muted); margin-top: 0.35rem; }
 .perf-notes li { margin: 0.15rem 0; }
 
+/* Tabs */
+.tabs {
+  display: flex; gap: 0; margin-top: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 0.4rem 0.9rem;
+  color: var(--muted); font-size: 0.85rem; font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab .badge {
+  background: var(--border); color: var(--muted);
+  border-radius: 8px; padding: 0.05rem 0.4rem;
+  font-size: 0.7rem; margin-left: 0.35rem;
+}
+.tab.active .badge { background: var(--accent); color: #0f172a; }
+
+.view { display: none; }
+.view.active { display: block; }
+
+/* Metric detail styling */
+.metric-detail .name {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.95rem; color: var(--accent); margin: 0 0 0.35rem;
+}
+.metric-detail .meta {
+  font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem;
+}
+.metric-detail .formula {
+  background: #0b1220; border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.55rem 0.7rem;
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.75rem; white-space: pre-wrap; word-break: break-word;
+  color: #e2e8f0; overflow-x: auto;
+}
+.metric-detail .threshold {
+  background: rgba(248, 113, 113, 0.08); border-left: 3px solid var(--unmapped);
+  padding: 0.35rem 0.7rem; border-radius: 4px;
+  font-size: 0.78rem; color: var(--ink);
+  margin: 0.4rem 0;
+}
+.metric-detail .feeders {
+  display: flex; flex-wrap: wrap; gap: 0.3rem;
+}
+.metric-detail .feeder {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.72rem;
+  background: var(--subbox); border: 1px solid var(--border);
+  padding: 0.15rem 0.5rem; border-radius: 12px;
+  cursor: pointer;
+}
+.metric-detail .feeder:hover {
+  background: var(--subbox-hover); border-color: var(--accent);
+}
+
+/* Metrics tree left-column shell */
+.tma-block { max-width: none; }
+.tma-block .tree-scroll { max-height: 620px; overflow: auto; }
+.subblock {
+  margin-top: 0.75rem;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+}
+.subblock > summary {
+  padding: 0.55rem 0.85rem; cursor: pointer; font-weight: 600;
+  font-size: 0.9rem; color: var(--ink);
+  display: flex; gap: 0.4rem; align-items: center;
+}
+.subblock > summary:hover { background: var(--box-hover); }
+.subblock[open] > summary { border-bottom: 1px solid var(--border); }
+.subblock .badge {
+  background: var(--accent); color: #0f172a;
+  padding: 0.05rem 0.4rem; border-radius: 8px;
+  font-size: 0.7rem; font-weight: 700;
+}
+.subblock ul.metric-list { list-style: none; margin: 0; padding: 0.35rem 0.85rem 0.7rem; }
+.subblock ul.metric-list li {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer; border-radius: 3px;
+}
+.subblock ul.metric-list li:hover { background: var(--box-hover); }
+.subblock ul.metric-list li.selected { background: var(--selected); }
+.subblock .group-title {
+  font-size: 0.75rem; color: var(--muted);
+  padding: 0.25rem 0.85rem 0.1rem;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+/* Used-by-metrics section in event detail */
+.usedby {
+  display: flex; flex-wrap: wrap; gap: 0.3rem;
+}
+.usedby .m-chip {
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  font-size: 0.72rem;
+  background: var(--subbox); border: 1px solid var(--border);
+  padding: 0.15rem 0.5rem; border-radius: 12px;
+  cursor: pointer;
+}
+.usedby .m-chip:hover { background: var(--subbox-hover); border-color: var(--accent); }
+
 /* SVG box styles */
 .cell rect.cell-frame { fill: var(--box); stroke: var(--border); stroke-width: 1.5; transition: stroke 0.1s, fill 0.1s; }
 .cell:hover > rect.cell-frame { stroke: var(--accent); cursor: pointer; }
@@ -261,12 +369,16 @@ text.node-count { fill: var(--accent); font-weight: 600; pointer-events: none; }
 
 PAGE_JS = """
 (function(){
-  var state = {path: null, eventName: null};
+  // state.tab is 'events' or 'metrics'.
+  // state.path is the uarch path (events tab).
+  // state.metric is the currently-selected metric name.
+  // state.eventName is the currently-selected event.
+  var state = {tab: 'events', path: null, eventName: null, metric: null};
 
   function q(sel, root){ return (root||document).querySelector(sel); }
   function qa(sel, root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
 
-  // Find a tree node by path array [cellId, subId, ...].
+  // Find a uarch tree node by path array [cellId, subId, ...].
   function findNode(pathArr){
     if(!pathArr || !pathArr.length) return null;
     var node = ARCH.cells[pathArr[0]];
@@ -283,7 +395,6 @@ PAGE_JS = """
     return node;
   }
 
-  // Collect all leaf events for a node (recursive).
   function collectEvents(node){
     if(node.events && node.events.length) return node.events.slice();
     var out = [];
@@ -291,18 +402,31 @@ PAGE_JS = """
     return out;
   }
 
+  // -------- Tab switching --------
+  function setTab(name){
+    state.tab = name;
+    qa('.tab').forEach(function(el){ el.classList.toggle('active', el.getAttribute('data-tab') === name); });
+    qa('.view').forEach(function(el){ el.classList.toggle('active', el.id === 'view-' + name); });
+  }
+
+  function wireTabs(){
+    qa('.tab').forEach(function(el){
+      el.addEventListener('click', function(){ setTab(el.getAttribute('data-tab')); });
+    });
+  }
+
+  // -------- Events tab: uarch selection --------
   function selectPath(pathStr){
-    state.path = pathStr; state.eventName = null;
+    state.path = pathStr; state.eventName = null; state.metric = null;
     qa('.selected').forEach(function(el){ el.classList.remove('selected'); });
-    // Highlight this node and every ancestor
     var arr = pathStr.split('/');
     for(var i = 1; i <= arr.length; i++){
       var seg = arr.slice(0, i).join('/');
       var el = q('[data-path="'+seg+'"]');
       if(el) el.classList.add('selected');
     }
-    renderEventList();
-    renderEventDetail();
+    renderList();
+    renderDetail();
   }
 
   function pathTitle(pathArr){
@@ -317,11 +441,9 @@ PAGE_JS = """
   }
 
   function renderNodeGroup(node, pathStr){
-    // Recursively render nested groups for the right-column list.
     var parts = [];
     var kids = node.subs || [];
     if(kids.length === 0){
-      // Flat leaf event list
       parts.push('<ul class="event-list">');
       (node.events || []).forEach(function(name){
         parts.push('<li data-ev="'+encodeURIComponent(name)+'">'+escapeHtml(name)+'</li>');
@@ -339,10 +461,30 @@ PAGE_JS = """
     return parts.join('');
   }
 
-  function renderEventList(){
-    var pane = q('#pane-events');
+  function renderList(){
+    var pane = q('#pane-list');
+    if(state.metric){
+      // A metric was picked — show its feeder events as the list
+      var m = ARCH.metrics[state.metric];
+      if(!m){ pane.innerHTML = '<div class="empty">Unknown metric.</div>'; return; }
+      var parts = [];
+      parts.push('<h2>'+escapeHtml(m.name)+' <span class="badge">L'+m.level+'</span></h2>');
+      var pathBits = [];
+      if(m.category) pathBits.push(m.category);
+      if(m.parent) pathBits.push(m.parent);
+      if(pathBits.length) parts.push('<div class="path">'+escapeHtml(pathBits.join(' › '))+'</div>');
+      parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')</h4>');
+      parts.push('<ul class="event-list">');
+      m.events.forEach(function(name){
+        parts.push('<li data-ev="'+encodeURIComponent(name)+'">'+escapeHtml(name)+'</li>');
+      });
+      parts.push('</ul>');
+      pane.innerHTML = parts.join('');
+      wireEventListItems();
+      return;
+    }
     if(!state.path){
-      pane.innerHTML = '<div class="empty">Click a component on the left to see its events.</div>';
+      pane.innerHTML = '<div class="empty">Click a component or metric on the left.</div>';
       return;
     }
     var arr = state.path.split('/');
@@ -357,12 +499,8 @@ PAGE_JS = """
     parts.push(renderNodeGroup(node, state.path));
     pane.innerHTML = parts.join('');
 
-    qa('#pane-events li[data-ev]').forEach(function(li){
-      li.addEventListener('click', function(){
-        selectEvent(decodeURIComponent(li.getAttribute('data-ev')));
-      });
-    });
-    qa('#pane-events .sub-summary').forEach(function(el){
+    wireEventListItems();
+    qa('#pane-list .sub-summary').forEach(function(el){
       var header = el.querySelector('h3');
       if(!header) return;
       header.style.cursor = 'pointer';
@@ -373,21 +511,58 @@ PAGE_JS = """
     });
   }
 
-  function selectEvent(name){
-    state.eventName = name;
-    qa('#pane-events li.selected').forEach(function(el){ el.classList.remove('selected'); });
-    var target = q('#pane-events li[data-ev="'+encodeURIComponent(name)+'"]');
-    if(target) target.classList.add('selected');
-    renderEventDetail();
+  function wireEventListItems(){
+    qa('#pane-list li[data-ev]').forEach(function(li){
+      li.addEventListener('click', function(){
+        selectEvent(decodeURIComponent(li.getAttribute('data-ev')));
+      });
+    });
   }
 
-  function renderEventDetail(){
+  function selectEvent(name){
+    state.eventName = name;
+    qa('#pane-list li.selected').forEach(function(el){ el.classList.remove('selected'); });
+    var target = q('#pane-list li[data-ev="'+encodeURIComponent(name)+'"]');
+    if(target) target.classList.add('selected');
+    renderDetail();
+  }
+
+  // -------- Metrics tab: metric selection --------
+  function selectMetric(name){
+    state.metric = name; state.eventName = null; state.path = null;
+    qa('.selected').forEach(function(el){ el.classList.remove('selected'); });
+    var svgEl = q('[data-metric="'+cssEsc(name)+'"]');
+    if(svgEl) svgEl.classList.add('selected');
+    qa('#view-metrics li[data-metric="'+cssEsc(name)+'"]').forEach(function(el){
+      el.classList.add('selected');
+    });
+    renderList();
+    renderDetail();
+    // Scroll the tree node into view
+    if(svgEl && svgEl.scrollIntoView){
+      try { svgEl.scrollIntoView({block: 'center', behavior: 'smooth'}); } catch(e){}
+    }
+  }
+
+  function cssEsc(s){ return String(s).replace(/"/g, '\\\\"'); }
+
+  function renderDetail(){
     var pane = q('#pane-detail');
-    var ev = state.eventName ? ARCH.events[state.eventName] : null;
-    if(!ev){
-      pane.innerHTML = '<div class="empty">Select an event from the list above to see its full description.</div>';
+    // Prefer eventName over metric — when both are set (e.g. user drills into
+    // a metric's feeder), the event is what they're currently looking at.
+    if(state.eventName){
+      renderEventDetail(pane, ARCH.events[state.eventName]);
       return;
     }
+    if(state.metric){
+      renderMetricDetail(pane, ARCH.metrics[state.metric]);
+      return;
+    }
+    pane.innerHTML = '<div class="empty">Select an event or metric to see its full description.</div>';
+  }
+
+  function renderEventDetail(pane, ev){
+    if(!ev){ pane.innerHTML = '<div class="empty">Unknown event.</div>'; return; }
     var parts = ['<div class="event-detail">'];
     parts.push('<div class="name">'+escapeHtml(ev.name)+'</div>');
     parts.push('<dl>');
@@ -421,6 +596,16 @@ PAGE_JS = """
       parts.push('</div></div>');
     }
 
+    if(ev.used_by && ev.used_by.length){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>Used by '+ev.used_by.length+' metric'+(ev.used_by.length===1?'':'s')+'</h4>');
+      parts.push('<div class="usedby">');
+      ev.used_by.forEach(function(mname){
+        parts.push('<span class="m-chip" data-jump-metric="'+encodeURIComponent(mname)+'">'+escapeHtml(mname)+'</span>');
+      });
+      parts.push('</div></div>');
+    }
+
     if(ev.perf){
       parts.push('<div class="detail-section">');
       parts.push('<h4>Copy-paste perf</h4>');
@@ -444,8 +629,64 @@ PAGE_JS = """
 
     parts.push('</div>');
     pane.innerHTML = parts.join('');
+    wireDetailCopy();
+    wireDetailMetricChips();
+  }
 
-    // Wire copy buttons
+  function renderMetricDetail(pane, m){
+    if(!m){ pane.innerHTML = '<div class="empty">Unknown metric.</div>'; return; }
+    var parts = ['<div class="metric-detail">'];
+    parts.push('<div class="name">'+escapeHtml(m.name)+'</div>');
+    var bits = [];
+    if(m.category) bits.push(escapeHtml(m.category));
+    if(m.parent) bits.push(escapeHtml(m.parent));
+    bits.push('L' + m.level);
+    if(m.unit) bits.push(escapeHtml(m.unit));
+    parts.push('<div class="meta">'+bits.join(' · ')+'</div>');
+    if(m.brief){ parts.push('<div style="font-size:0.82rem;line-height:1.5;margin-bottom:0.5rem;">'+escapeHtml(m.brief)+'</div>'); }
+
+    parts.push('<div class="detail-section">');
+    parts.push('<h4>Formula</h4>');
+    parts.push('<div class="formula">'+escapeHtml(m.formula_expanded || m.formula_raw || '(no formula)')+'</div>');
+    parts.push('</div>');
+
+    if(m.threshold_formula){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>Threshold</h4>');
+      parts.push('<div class="threshold">'+escapeHtml(m.threshold_gloss || m.threshold_formula)+'</div>');
+      if(m.threshold_issues){
+        parts.push('<div style="font-size:0.7rem;color:var(--muted);margin-top:0.35rem;">Signals: '+escapeHtml(m.threshold_issues)+'</div>');
+      }
+      parts.push('</div>');
+    }
+
+    if(m.events && m.events.length){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>Feeder events ('+m.events.length+')</h4>');
+      parts.push('<div class="feeders">');
+      m.events.forEach(function(ename){
+        parts.push('<span class="feeder" data-jump-event="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+'</span>');
+      });
+      parts.push('</div></div>');
+    }
+
+    if(m.group){
+      parts.push('<div class="detail-section">');
+      parts.push('<h4>Metadata</h4>');
+      parts.push('<dl>');
+      parts.push('<dt>Metric group</dt><dd class="desc">'+escapeHtml(m.group)+'</dd>');
+      if(m.count_domain){ parts.push('<dt>Count domain</dt><dd class="desc">'+escapeHtml(m.count_domain)+'</dd>'); }
+      if(m.legacy){ parts.push('<dt>Legacy name</dt><dd>'+escapeHtml(m.legacy)+'</dd>'); }
+      parts.push('</dl></div>');
+    }
+
+    parts.push('</div>');
+    pane.innerHTML = parts.join('');
+    wireDetailFeederChips();
+    wireDetailMetricChips();
+  }
+
+  function wireDetailCopy(){
     qa('#pane-detail button.copy').forEach(function(btn){
       btn.addEventListener('click', function(e){
         e.preventDefault();
@@ -455,6 +696,37 @@ PAGE_JS = """
             btn.textContent = 'copied';
             setTimeout(function(){ btn.textContent = 'copy'; }, 1200);
           });
+        }
+      });
+    });
+  }
+
+  function wireDetailMetricChips(){
+    qa('#pane-detail .m-chip[data-jump-metric]').forEach(function(el){
+      el.addEventListener('click', function(){
+        var name = decodeURIComponent(el.getAttribute('data-jump-metric'));
+        setTab('metrics'); selectMetric(name);
+      });
+    });
+  }
+
+  function wireDetailFeederChips(){
+    qa('#pane-detail .feeder[data-jump-event]').forEach(function(el){
+      el.addEventListener('click', function(){
+        var name = decodeURIComponent(el.getAttribute('data-jump-event'));
+        // Jump to the event: switch to events tab, select its uarch path, then event.
+        var idx = EVENT_INDEX && EVENT_INDEX[name];
+        if(idx){
+          setTab('events');
+          selectPath(idx.path.join('/'));
+          selectEvent(name);
+        } else {
+          // Event not in the uarch map (e.g. PERF_METRICS.*) — just show its
+          // detail if we have it, or a hint otherwise.
+          if(ARCH.events[name]){
+            state.eventName = name; state.metric = null; state.path = null;
+            renderDetail();
+          }
         }
       });
     });
@@ -475,9 +747,83 @@ PAGE_JS = """
         selectPath(el.getAttribute('data-path'));
       });
     });
+    qa('[data-metric]').forEach(function(el){
+      el.addEventListener('click', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        selectMetric(el.getAttribute('data-metric'));
+      });
+    });
   }
 
-  // -------- Search --------
+  // -------- Populate metrics tab sidebar lists --------
+  function renderMetricsSidebar(){
+    // Bottlenecks
+    var bcount = q('#bottleneck-count');
+    var blist = q('#bottleneck-list');
+    if(ARCH.bottlenecks && ARCH.bottlenecks.length){
+      bcount.textContent = ARCH.bottlenecks.length;
+      blist.innerHTML = ARCH.bottlenecks.map(function(name){
+        return '<li data-metric="'+escapeHtml(name)+'">'+escapeHtml(name)+'</li>';
+      }).join('');
+    } else {
+      q('#bottleneck-block').style.display = 'none';
+    }
+    // Info groups
+    var iBlock = q('#info-block');
+    var iCount = q('#info-count');
+    var iContainer = q('#info-groups');
+    var infoGroups = ARCH.info_groups || {};
+    var infoNames = Object.keys(infoGroups);
+    if(infoNames.length){
+      var total = 0;
+      var parts = [];
+      infoNames.sort().forEach(function(g){
+        var items = infoGroups[g];
+        total += items.length;
+        parts.push('<div class="group-title">'+escapeHtml(g)+' ('+items.length+')</div>');
+        parts.push('<ul class="metric-list">');
+        items.forEach(function(name){
+          parts.push('<li data-metric="'+escapeHtml(name)+'">'+escapeHtml(name)+'</li>');
+        });
+        parts.push('</ul>');
+      });
+      iCount.textContent = total;
+      iContainer.innerHTML = parts.join('');
+    } else {
+      iBlock.style.display = 'none';
+    }
+    // Non-TMA (CWF-style)
+    var nBlock = q('#nontma-block');
+    var nCount = q('#nontma-count');
+    var nContainer = q('#nontma-groups');
+    var nonTma = ARCH.non_tma_categories || {};
+    var nKeys = Object.keys(nonTma);
+    if(nKeys.length){
+      var nTotal = 0;
+      var nParts = [];
+      nKeys.sort().forEach(function(g){
+        var items = nonTma[g];
+        nTotal += items.length;
+        nParts.push('<div class="group-title">'+escapeHtml(g || 'Uncategorized')+' ('+items.length+')</div>');
+        nParts.push('<ul class="metric-list">');
+        items.forEach(function(name){
+          nParts.push('<li data-metric="'+escapeHtml(name)+'">'+escapeHtml(name)+'</li>');
+        });
+        nParts.push('</ul>');
+      });
+      nCount.textContent = nTotal;
+      nContainer.innerHTML = nParts.join('');
+    } else {
+      nBlock.style.display = 'none';
+    }
+    // Wire clicks
+    qa('#view-metrics li[data-metric]').forEach(function(li){
+      li.addEventListener('click', function(){ selectMetric(li.getAttribute('data-metric')); });
+    });
+  }
+
+  // -------- Search (events + metrics) --------
   var EVENT_INDEX = null;   // {eventName: {path: [ids], titlePath: 'a › b › c'}}
   var suggestions = [];
   var activeIdx = -1;
@@ -507,13 +853,22 @@ PAGE_JS = """
     query = (query || '').trim().toUpperCase();
     if(!query){ return []; }
     var results = [];
-    var names = Object.keys(EVENT_INDEX);
-    for(var i = 0; i < names.length; i++){
-      var n = names[i];
+    // Events
+    var enames = Object.keys(EVENT_INDEX);
+    for(var i = 0; i < enames.length; i++){
+      var n = enames[i];
       var idx = n.toUpperCase().indexOf(query);
       if(idx !== -1){
-        results.push({name: n, idx: idx, len: n.length});
-        if(results.length >= 200) break;   // cap for perf
+        results.push({kind: 'event', name: n, idx: idx, len: n.length});
+      }
+    }
+    // Metrics
+    var mnames = Object.keys(ARCH.metrics || {});
+    for(var j = 0; j < mnames.length; j++){
+      var mn = mnames[j];
+      var mi = mn.toUpperCase().indexOf(query);
+      if(mi !== -1){
+        results.push({kind: 'metric', name: mn, idx: mi, len: mn.length});
       }
     }
     // Rank: startsWith first, then shorter names first
@@ -522,7 +877,7 @@ PAGE_JS = """
       if(a.idx !== b.idx) return a.idx - b.idx;
       return a.len - b.len;
     });
-    return results.slice(0, 30);
+    return results.slice(0, 40);
   }
 
   function renderSuggestions(query){
@@ -535,29 +890,35 @@ PAGE_JS = """
       return;
     }
     if(suggestions.length === 0){
-      box.innerHTML = '<div class="search-empty">No matching events.</div>';
+      box.innerHTML = '<div class="search-empty">No matching events or metrics.</div>';
       box.classList.add('open');
       return;
     }
-    var qUpper = query.toUpperCase();
     var parts = [];
     suggestions.forEach(function(s, i){
-      var entry = EVENT_INDEX[s.name];
-      var nameLower = s.name.toUpperCase();
-      var pos = nameLower.indexOf(qUpper);
+      var pos = s.idx;
       var pre = escapeHtml(s.name.slice(0, pos));
       var hit = escapeHtml(s.name.slice(pos, pos + query.length));
       var post = escapeHtml(s.name.slice(pos + query.length));
+      var sub = '';
+      if(s.kind === 'event'){
+        var entry = EVENT_INDEX[s.name];
+        sub = entry ? entry.titlePath : '';
+      } else {
+        var m = ARCH.metrics[s.name];
+        sub = m ? ('metric · L' + m.level + (m.category ? ' · ' + m.category : '')) : 'metric';
+      }
       parts.push('<div class="item" data-i="'+i+'">');
+      parts.push('<span style="opacity:0.55;font-size:0.68rem;text-transform:uppercase;margin-right:0.35rem;">'+s.kind+'</span>');
       parts.push(pre + '<mark>' + hit + '</mark>' + post);
-      parts.push('<span class="path">'+escapeHtml(entry.titlePath)+'</span>');
+      parts.push('<span class="path">'+escapeHtml(sub)+'</span>');
       parts.push('</div>');
     });
     box.innerHTML = parts.join('');
     box.classList.add('open');
     qa('#search-suggestions .item').forEach(function(el){
       el.addEventListener('mousedown', function(e){
-        e.preventDefault();  // don't blur the input before click fires
+        e.preventDefault();
         pickSuggestion(parseInt(el.getAttribute('data-i'), 10));
       });
     });
@@ -566,17 +927,22 @@ PAGE_JS = """
   function pickSuggestion(i){
     var s = suggestions[i];
     if(!s) return;
-    var entry = EVENT_INDEX[s.name];
-    if(!entry) return;
-    selectPath(entry.path.join('/'));
-    selectEvent(s.name);
     q('#search-input').value = s.name;
     q('#search-suggestions').classList.remove('open');
-    // Scroll the SVG so the highlighted node is visible
-    var el = q('[data-path="'+entry.path.join('/')+'"]');
-    if(el && el.scrollIntoView){
-      try { el.scrollIntoView({block: 'center', inline: 'center', behavior: 'smooth'}); }
-      catch(e){}
+    if(s.kind === 'event'){
+      var entry = EVENT_INDEX[s.name];
+      if(!entry) return;
+      setTab('events');
+      selectPath(entry.path.join('/'));
+      selectEvent(s.name);
+      var el = q('[data-path="'+entry.path.join('/')+'"]');
+      if(el && el.scrollIntoView){
+        try { el.scrollIntoView({block: 'center', inline: 'center', behavior: 'smooth'}); }
+        catch(e){}
+      }
+    } else {
+      setTab('metrics');
+      selectMetric(s.name);
     }
   }
 
@@ -624,10 +990,12 @@ PAGE_JS = """
   }
 
   addEventListener('DOMContentLoaded', function(){
+    wireTabs();
     wireSvg();
     wireSearch();
-    renderEventList();
-    renderEventDetail();
+    renderMetricsSidebar();
+    renderList();
+    renderDetail();
   });
 })();
 """
@@ -813,6 +1181,130 @@ def _by_id(cells: list) -> dict:
 # ---------------------------------------------------------------------------
 # Core P-core layout
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# TMA tree renderer — horizontal indented tree
+#
+# Each node = one row, with an indent that scales with its depth. Rows are
+# stacked vertically top-to-bottom in a pre-order traversal so children appear
+# immediately after their parent. Elbow connectors are drawn from each parent
+# to its first & last child.
+# ---------------------------------------------------------------------------
+
+TMA_ROW_H = 28
+TMA_INDENT = 26
+TMA_NODE_W = 260
+TMA_ROW_GAP = 3
+TMA_LEFT_PAD = 20
+TMA_TOP_PAD = 24
+
+
+def _tma_walk_layout(node, depth, cursor) -> list:
+    """Pre-order traversal that assigns (x, y) to each node and returns a
+    flat list of dicts describing the row layout.
+
+    cursor is a mutable dict {'y': int} so nested calls share the row counter.
+    """
+    rows = [{
+        "node": node,
+        "depth": depth,
+        "x": TMA_LEFT_PAD + depth * TMA_INDENT,
+        "y": cursor["y"],
+    }]
+    cursor["y"] += TMA_ROW_H + TMA_ROW_GAP
+    child_row_indexes = []
+    for c in node.children:
+        child_start = len(rows)
+        rows.extend(_tma_walk_layout(c, depth + 1, cursor))
+        child_row_indexes.append((child_start, len(rows) - 1))
+    rows[0]["_child_ranges"] = child_row_indexes
+    return rows
+
+
+def render_tma_svg(tree: TmaTree, target_width: int) -> str:
+    """Render the TMA tree as a horizontal indented tree."""
+    if not tree.roots:
+        # Placeholder — CWF-style platforms with no TMA hierarchy.
+        return (
+            f'<svg viewBox="0 0 {target_width} 60" width="{target_width}" '
+            f'height="60" role="img">'
+            f'<text x="{target_width // 2}" y="34" class="tma-empty" '
+            f'text-anchor="middle">No TMA hierarchy defined for this platform.</text>'
+            f'</svg>'
+        )
+
+    cursor = {"y": TMA_TOP_PAD}
+    all_rows = []
+    for root in tree.roots:
+        all_rows.extend(_tma_walk_layout(root, 0, cursor))
+
+    canvas_h = cursor["y"] + TMA_TOP_PAD
+    canvas_w = target_width
+
+    parts = [
+        f'<svg viewBox="0 0 {canvas_w} {canvas_h}" width="{canvas_w}" '
+        f'height="{canvas_h}" role="img">'
+    ]
+    parts.append('<style>'
+                 '.tma-node rect { fill: var(--box); stroke: var(--border); stroke-width: 1; }'
+                 '.tma-node:hover rect { fill: var(--box-hover); stroke: var(--accent); cursor: pointer; }'
+                 '.tma-node.selected rect { fill: rgba(56,189,248,0.25); stroke: var(--accent); stroke-width: 2; }'
+                 '.tma-node text.title { fill: var(--ink); font-size: 12px; font-weight: 500; pointer-events: none; }'
+                 '.tma-node text.lvl { fill: var(--accent); font-size: 10px; font-weight: 600; pointer-events: none; }'
+                 '.tma-node text.leaf { fill: var(--muted); font-size: 9px; pointer-events: none; }'
+                 '.tma-node.has-thr rect { stroke-dasharray: none; }'
+                 '.tma-connector { stroke: var(--border); stroke-width: 1; fill: none; }'
+                 '.tma-empty { fill: var(--muted); font-size: 13px; font-style: italic; }'
+                 '</style>')
+
+    # Draw elbow connectors first (behind the boxes)
+    parts.append('<g class="tma-connectors">')
+    for row in all_rows:
+        node = row["node"]
+        if not node.children:
+            continue
+        parent_x = row["x"]
+        parent_y = row["y"]
+        # Find each direct-child row (they are direct children in the tree,
+        # matched by node identity)
+        for c in node.children:
+            child_row = next(r for r in all_rows if r["node"] is c)
+            cx = child_row["x"]
+            cy = child_row["y"]
+            # Elbow: down from parent's left edge, then right into child
+            px = parent_x + 8  # vertical stem below parent's left indent
+            parts.append(
+                f'<path class="tma-connector" '
+                f'd="M {px} {parent_y + TMA_ROW_H} L {px} {cy + TMA_ROW_H / 2} '
+                f'L {cx} {cy + TMA_ROW_H / 2}"/>'
+            )
+    parts.append('</g>')
+
+    # Draw the node rows
+    for row in all_rows:
+        node = row["node"]
+        m = node.metric
+        has_thr = bool((m.threshold or {}).get("Formula"))
+        cls = "tma-node has-thr" if has_thr else "tma-node"
+        x, y = row["x"], row["y"]
+        w = min(TMA_NODE_W, canvas_w - x - 20)
+        parts.append(
+            f'<g class="{cls}" data-metric="{html.escape(m.name)}">'
+            f'<rect x="{x}" y="{y}" width="{w}" height="{TMA_ROW_H}" rx="4"/>'
+            f'<text class="title" x="{x + 10}" y="{y + 17}">'
+            f'{html.escape(m.name)}</text>'
+            f'<text class="lvl" x="{x + w - 10}" y="{y + 17}" text-anchor="end">'
+            f'L{m.level}{" ⚑" if has_thr else ""}</text>'
+        )
+        if node.is_leaf:
+            parts.append(
+                f'<text class="leaf" x="{x + w + 4}" y="{y + 18}">leaf</text>'
+            )
+        parts.append('</g>')
+
+    parts.append('</svg>')
+    return "\n".join(parts)
+
 
 def _core_canvas_width(cells: list, is_ecore: bool = False) -> int:
     """Compute the total width of the core diagram — used to size the uncore
@@ -1228,7 +1720,52 @@ def _leaf_paths(node, path: tuple, out: dict) -> None:
         out[ev.name] = path
 
 
-def _build_payload(arch_map: ArchMap) -> dict:
+def _threshold_gloss(threshold: dict) -> str:
+    """Return a short plain-English description of a metric's threshold."""
+    if not threshold:
+        return ""
+    formula = threshold.get("Formula") or threshold.get("BaseFormula") or ""
+    if not formula:
+        return ""
+    # The formula is like "a > 15" where a is the metric itself. Just show the
+    # numeric side.
+    return f"Bottleneck when {formula.strip()}"
+
+
+def _serialize_tma_node(node) -> dict:
+    """Recursively serialize a TmaNode into JSON-friendly form."""
+    m = node.metric
+    return {
+        "name": m.name,
+        "level": m.level,
+        "is_leaf": node.is_leaf,
+        "children": [_serialize_tma_node(c) for c in node.children],
+    }
+
+
+def _serialize_metric(m) -> dict:
+    """Full metric detail — formula, threshold, feeders, metadata."""
+    return {
+        "name": m.name,
+        "legacy": m.legacy_name,
+        "level": m.level,
+        "category": m.category,
+        "parent": m.parent_category,
+        "brief": m.brief_description,
+        "formula_raw": m.formula,
+        "formula_expanded": expand_formula(m),
+        "threshold_formula": (m.threshold or {}).get("Formula", ""),
+        "threshold_base": (m.threshold or {}).get("BaseFormula", ""),
+        "threshold_issues": (m.threshold or {}).get("ThresholdIssues", ""),
+        "threshold_gloss": _threshold_gloss(m.threshold),
+        "events": sorted(m.event_names),
+        "unit": m.unit_of_measure,
+        "group": m.metric_group,
+        "count_domain": m.count_domain,
+    }
+
+
+def _build_payload(arch_map: ArchMap, catalog: Optional[PlatformCatalog] = None) -> dict:
     cells = {}
     events = {}
 
@@ -1237,6 +1774,10 @@ def _build_payload(arch_map: ArchMap) -> dict:
     ev_paths = {}
     for cell in list(arch_map.core_cells) + list(arch_map.uncore_cells):
         _leaf_paths(cell, (cell.id,), ev_paths)
+
+    # Reverse index: event name -> [metric names] using this event. Populated
+    # below once we have the metrics list.
+    events_to_metrics: dict = {}
 
     for cell in list(arch_map.core_cells) + list(arch_map.uncore_cells):
         cells[cell.id] = _serialize_node(cell)
@@ -1262,15 +1803,70 @@ def _build_payload(arch_map: ArchMap) -> dict:
                     for a, exp, gloss in acronyms
                 ],
                 "perf": examples,
+                # will be filled in after metrics are indexed
+                "used_by": [],
             }
-    return {"cells": cells, "events": events}
+
+    # -------- Metrics + TMA tree --------
+    metrics = {}
+    tma_roots = []
+    bottlenecks = []
+    info_groups = {}
+    non_tma_categories = {}   # for CWF-style platforms with no TMA tree
+
+    if catalog is not None:
+        # Populate metrics dict, event→metrics reverse index
+        for m in catalog.metrics:
+            metrics[m.name] = _serialize_metric(m)
+            for ev_name in m.event_names:
+                events_to_metrics.setdefault(ev_name, []).append(m.name)
+
+        # Fill in each event's `used_by` list (sorted for stable output)
+        for ev_name, mlist in events_to_metrics.items():
+            if ev_name in events:
+                events[ev_name]["used_by"] = sorted(set(mlist))
+
+        # Build the TMA tree (may be empty on platforms like CWF)
+        tree = TmaTree(catalog)
+        tma_roots = [_serialize_tma_node(r) for r in tree.roots]
+        bottlenecks = [m.name for m in tree.bottlenecks]
+
+        # Group Info metrics by their first MetricGroup token
+        for m in tree.info_metrics:
+            g = (m.metric_group or "Uncategorized").split(";")[0].strip() or "Uncategorized"
+            info_groups.setdefault(g, []).append(m.name)
+        for g in info_groups:
+            info_groups[g].sort()
+
+        # For platforms without a TMA tree (CWF), also expose the flat
+        # category-keyed list so the UI has something to show.
+        if not tma_roots:
+            for m in catalog.metrics:
+                if m.is_info or m.is_bottleneck:
+                    continue
+                cat_key = m.category or "Uncategorized"
+                non_tma_categories.setdefault(cat_key, []).append(m.name)
+            for k in non_tma_categories:
+                non_tma_categories[k].sort()
+
+    return {
+        "cells": cells,
+        "events": events,
+        "metrics": metrics,
+        "tma_roots": tma_roots,
+        "bottlenecks": bottlenecks,
+        "info_groups": info_groups,
+        "non_tma_categories": non_tma_categories,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Page assembly
 # ---------------------------------------------------------------------------
 
-def render_page(arch_map: ArchMap, platform_display: Optional[str] = None) -> str:
+def render_page(arch_map: ArchMap,
+                platform_display: Optional[str] = None,
+                catalog: Optional[PlatformCatalog] = None) -> str:
     display = platform_display or arch_map.platform
     total = arch_map.total_core + arch_map.total_uncore
     mapped = arch_map.core_mapped + arch_map.uncore_mapped
@@ -1281,14 +1877,23 @@ def render_page(arch_map: ArchMap, platform_display: Optional[str] = None) -> st
     # Whether to draw CXL as connected: any platform that actually carries CXL
     # events (GNR + CWF today, via the experimental uncore file).
     has_cxl = any(c.id == "cxl" and c.count > 0 for c in arch_map.uncore_cells)
+    canvas_w = _core_canvas_width(arch_map.core_cells, is_ecore=is_ecore)
     uncore_svg = render_uncore_svg(
         arch_map.uncore_cells,
         include_cxl=has_cxl,
-        target_width=_core_canvas_width(arch_map.core_cells, is_ecore=is_ecore),
+        target_width=canvas_w,
     )
 
-    payload = _build_payload(arch_map)
+    payload = _build_payload(arch_map, catalog=catalog)
     payload_json = json.dumps(payload, separators=(",", ":"))
+    n_metrics = len(payload["metrics"])
+    n_events = len(payload["events"])
+
+    # TMA tree SVG (may be an empty placeholder for CWF etc.)
+    tma_svg = ""
+    if catalog is not None:
+        tree = TmaTree(catalog)
+        tma_svg = render_tma_svg(tree, target_width=canvas_w)
 
     return f'''<!doctype html>
 <html lang="en">
@@ -1302,9 +1907,9 @@ def render_page(arch_map: ArchMap, platform_display: Optional[str] = None) -> st
   <div class="head-row">
     <div class="head-info">
       <h1>{html.escape(display)} — Architecture Event Map</h1>
-      <div class="subtitle">Click a component on the left, or search for an event by name.</div>
+      <div class="subtitle">Click a component or metric on the left, or search across both.</div>
       <div class="stats">
-        <div class="stat"><b>{total}</b>total</div>
+        <div class="stat"><b>{total}</b>events total</div>
         <div class="stat mapped"><b>{mapped}</b>mapped</div>
         <div class="stat unmapped"><b>{unmapped}</b>unmapped</div>
         <div class="stat"><b>{arch_map.total_core}</b>core</div>
@@ -1312,29 +1917,53 @@ def render_page(arch_map: ArchMap, platform_display: Optional[str] = None) -> st
       </div>
     </div>
     <div class="search-box">
-      <input id="search-input" type="text" placeholder="Search events (e.g. BR_MISP or UNC_M_CAS)…" autocomplete="off" spellcheck="false" />
+      <input id="search-input" type="text" placeholder="Search events or metrics…" autocomplete="off" spellcheck="false" />
       <div class="search-suggestions" id="search-suggestions"></div>
     </div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-tab="events">Events <span class="badge">{n_events}</span></div>
+    <div class="tab" data-tab="metrics">Metrics <span class="badge">{n_metrics}</span></div>
   </div>
 </header>
 
 <div class="layout">
   <div class="left-col">
-    <div class="diagram-block">
-      <h2>Core Pipeline</h2>
-      {core_svg}
+    <div class="view active" id="view-events">
+      <div class="diagram-block">
+        <h2>Core Pipeline</h2>
+        {core_svg}
+      </div>
+      <div class="diagram-block">
+        <h2>Uncore / SoC</h2>
+        {uncore_svg}
+      </div>
     </div>
-    <div class="diagram-block">
-      <h2>Uncore / SoC</h2>
-      {uncore_svg}
+    <div class="view" id="view-metrics">
+      <div class="diagram-block tma-block">
+        <h2>TMA Hierarchy</h2>
+        <div class="tree-scroll">{tma_svg}</div>
+      </div>
+      <details class="subblock" id="bottleneck-block">
+        <summary>Bottleneck aggregates <span class="badge" id="bottleneck-count">0</span></summary>
+        <ul class="metric-list" id="bottleneck-list"></ul>
+      </details>
+      <details class="subblock" id="info-block">
+        <summary>Info metrics <span class="badge" id="info-count">0</span></summary>
+        <div id="info-groups"></div>
+      </details>
+      <details class="subblock" id="nontma-block">
+        <summary>Metrics (no TMA hierarchy) <span class="badge" id="nontma-count">0</span></summary>
+        <div id="nontma-groups"></div>
+      </details>
     </div>
   </div>
   <div class="right-col">
-    <div class="right-pane top" id="pane-events">
-      <div class="empty">Click a component on the left to see its events.</div>
+    <div class="right-pane top" id="pane-list">
+      <div class="empty">Click a component or metric on the left.</div>
     </div>
     <div class="right-pane bottom" id="pane-detail">
-      <div class="empty">Select an event from the list above to see its full description.</div>
+      <div class="empty">Select an event or metric to see its full description.</div>
     </div>
   </div>
 </div>
