@@ -142,8 +142,11 @@ def test_diff_payload_gnr_vs_emr():
             + c["removed_denser_variants"]) > 1000
 
 
-def test_diff_cwf_vs_srf_flags_missing_tma_tree():
-    """The SRF→CWF diff should list SRF's TMA metrics as removed."""
+def test_diff_metrics_suppressed_when_current_lacks_tma():
+    """CWF hasn't shipped TMA yet. The event diff still runs, but the
+    metrics side is suppressed (metrics_diff_available=False, empty
+    metrics_status/removed) so users don't see misleading 'missing TMA
+    tree' counts."""
     from perfmon_tools.archmap.render import _build_payload, PREDECESSOR
     cat = _catalog_for("CWF")
     baseline = _catalog_for(PREDECESSOR["CWF"])
@@ -151,10 +154,12 @@ def test_diff_cwf_vs_srf_flags_missing_tma_tree():
     p = _build_payload(build_arch_map(cat), catalog=cat, baseline=baseline)
     d = p["diff"]
     assert d is not None
-    # The removed metrics list should contain the SRF TMA roots.
-    removed = set(d["metrics_removed"])
-    for name in ("Frontend_Bound", "Backend_Bound", "Bad_Speculation"):
-        assert name in removed, f"{name} expected in removed metrics"
+    # Event diff still populated
+    assert d["counts"]["events"]["new"] > 0
+    # Metrics side suppressed
+    assert d["metrics_diff_available"] is False
+    assert d["metrics_status"] == {}
+    assert d["metrics_removed"] == []
 
 
 def test_pseudo_events_carry_computation_formula():

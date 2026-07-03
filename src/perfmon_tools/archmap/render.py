@@ -673,13 +673,22 @@ PAGE_JS = """
         'These are filtered out to keep the highlight focused on real changes.' +
         '</span></span>';
     }
+    var metricsPart = '';
+    if(d.metrics_diff_available){
+      metricsPart =
+        '  Metrics: <span class="cs-new">+'+m.new+'</span> ' +
+        '<span class="cs-changed">~'+m.changed+'</span> ' +
+        '<span class="cs-removed">-'+m.removed+'</span>';
+    } else {
+      metricsPart =
+        '  <span style="color:var(--muted);font-style:italic;">Metrics diff skipped ' +
+        '— this platform has not yet published TMA formulas.</span>';
+    }
     q('#cs-counts').innerHTML =
       'Events: <span class="cs-new">+'+e.new+'</span>' + newTip + ' ' +
       '<span class="cs-changed">~'+e.changed+'</span> ' +
       '<span class="cs-removed">-'+e.removed_genuinely_gone+'</span>' + removedTip +
-      '  Metrics: <span class="cs-new">+'+m.new+'</span> ' +
-      '<span class="cs-changed">~'+m.changed+'</span> ' +
-      '<span class="cs-removed">-'+m.removed+'</span>';
+      metricsPart;
     var host = q('#cs-cells');
     var cells = d.cell_rollup || {};
     // Show only cells that actually changed something
@@ -727,7 +736,7 @@ PAGE_JS = """
     var host = q('#view-metrics');
     var existing = q('#removed-metrics-block');
     if(existing) existing.remove();
-    var mGone = ARCH.diff.metrics_removed || [];
+    var mGone = (ARCH.diff.metrics_diff_available ? ARCH.diff.metrics_removed : []) || [];
     if(mGone.length){
       var det = document.createElement('details');
       det.className = 'subblock';
@@ -2546,9 +2555,25 @@ def _metric_signature(m) -> tuple:
     )
 
 
+def _has_tma(catalog: PlatformCatalog) -> bool:
+    """True iff the catalog's metrics file advertises a TMA version — i.e.
+    Intel has published TMA formulas for this platform. When either side
+    lacks TMA the metrics diff is dominated by the missing TMA tree
+    and is misleading, so we skip metrics diffing while still doing events."""
+    h = getattr(catalog, "metrics_header", None) or {}
+    return bool((h.get("TmaVersion") or "").strip())
+
+
 def _build_diff(current: PlatformCatalog,
-                baseline: PlatformCatalog) -> dict:
-    """Compute per-event / per-metric status maps + summary counts."""
+                baseline: PlatformCatalog) -> Optional[dict]:
+    """Compute per-event / per-metric status maps + summary counts.
+
+    Skips the metrics diff (metrics_status stays empty, counts show zeros)
+    when either the current or baseline catalog lacks a TMA hierarchy —
+    the diff would otherwise be dominated by "missing TMA tree" noise
+    rather than architectural change.
+    """
+    skip_metrics = not (_has_tma(current) and _has_tma(baseline))
     events_status = {}     # ev name -> 'new' | 'changed' | 'same'
     metrics_status = {}    # metric name -> 'new' | 'changed' | 'same'
     events_removed = []    # names that exist in baseline but not current
@@ -2567,18 +2592,19 @@ def _build_diff(current: PlatformCatalog,
     for name in sorted(set(base_events) - set(cur_events)):
         events_removed.append(name)
 
-    cur_metrics = {m.name: m for m in current.metrics}
-    base_metrics = {m.name: m for m in baseline.metrics}
-    for name, m in cur_metrics.items():
-        b = base_metrics.get(name)
-        if b is None:
-            metrics_status[name] = "new"
-        elif _metric_signature(m) != _metric_signature(b):
-            metrics_status[name] = "changed"
-        else:
-            metrics_status[name] = "same"
-    for name in sorted(set(base_metrics) - set(cur_metrics)):
-        metrics_removed.append(name)
+    if not skip_metrics:
+        cur_metrics = {m.name: m for m in current.metrics}
+        base_metrics = {m.name: m for m in baseline.metrics}
+        for name, m in cur_metrics.items():
+            b = base_metrics.get(name)
+            if b is None:
+                metrics_status[name] = "new"
+            elif _metric_signature(m) != _metric_signature(b):
+                metrics_status[name] = "changed"
+            else:
+                metrics_status[name] = "same"
+        for name in sorted(set(base_metrics) - set(cur_metrics)):
+            metrics_removed.append(name)
 
     from ..core.arch_map import build_arch_map
     cur_am = build_arch_map(current)
@@ -2722,6 +2748,7 @@ def _build_diff(current: PlatformCatalog,
     return {
         "baseline": baseline.platform.shortname,
         "baseline_name": baseline.platform.name,
+        "metrics_diff_available": not skip_metrics,
         "events_status": events_status,
         "metrics_status": metrics_status,
         "events_removed": events_removed,
