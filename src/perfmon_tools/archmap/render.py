@@ -391,6 +391,35 @@ body.cmp-on [data-metric][data-status="changed"] > rect.cell-frame { stroke: #fb
 /* Subtle accent-coloured outline on boxes that have diff activity */
 body.cmp-on [data-path].cmp-box-outline > rect.cell-frame { stroke: var(--accent); }
 
+/* Fill tint by dominant status. Depth 1 (top-level cell) gets the strongest
+   tint; deeper nested subs get fainter so parent/child nesting stays
+   readable and the stack doesn't turn into one solid colour block. */
+body.cmp-on [data-path][data-depth="1"][data-diff-tint="new"] > rect.cell-frame { fill: rgba(74, 222, 128, 0.14); }
+body.cmp-on [data-path][data-depth="1"][data-diff-tint="chg"] > rect.cell-frame { fill: rgba(251, 191, 36, 0.14); }
+body.cmp-on [data-path][data-depth="1"][data-diff-tint="rem"] > rect.cell-frame { fill: rgba(248, 113, 113, 0.14); }
+body.cmp-on [data-path][data-depth="1"][data-diff-tint="mix"] > rect.cell-frame { fill: rgba(56, 189, 248, 0.12); }
+
+body.cmp-on [data-path][data-depth="2"][data-diff-tint="new"] > rect.cell-frame { fill: rgba(74, 222, 128, 0.10); }
+body.cmp-on [data-path][data-depth="2"][data-diff-tint="chg"] > rect.cell-frame { fill: rgba(251, 191, 36, 0.10); }
+body.cmp-on [data-path][data-depth="2"][data-diff-tint="rem"] > rect.cell-frame { fill: rgba(248, 113, 113, 0.10); }
+body.cmp-on [data-path][data-depth="2"][data-diff-tint="mix"] > rect.cell-frame { fill: rgba(56, 189, 248, 0.10); }
+
+body.cmp-on [data-path][data-depth="3"][data-diff-tint="new"] > rect.cell-frame { fill: rgba(74, 222, 128, 0.08); }
+body.cmp-on [data-path][data-depth="3"][data-diff-tint="chg"] > rect.cell-frame { fill: rgba(251, 191, 36, 0.08); }
+body.cmp-on [data-path][data-depth="3"][data-diff-tint="rem"] > rect.cell-frame { fill: rgba(248, 113, 113, 0.08); }
+body.cmp-on [data-path][data-depth="3"][data-diff-tint="mix"] > rect.cell-frame { fill: rgba(56, 189, 248, 0.08); }
+
+body.cmp-on [data-path][data-depth="4"][data-diff-tint="new"] > rect.cell-frame { fill: rgba(74, 222, 128, 0.06); }
+body.cmp-on [data-path][data-depth="4"][data-diff-tint="chg"] > rect.cell-frame { fill: rgba(251, 191, 36, 0.06); }
+body.cmp-on [data-path][data-depth="4"][data-diff-tint="rem"] > rect.cell-frame { fill: rgba(248, 113, 113, 0.06); }
+body.cmp-on [data-path][data-depth="4"][data-diff-tint="mix"] > rect.cell-frame { fill: rgba(56, 189, 248, 0.06); }
+
+/* Outline colour matches the dominant tint (overrides the generic
+   .cmp-box-outline accent stroke). */
+body.cmp-on [data-diff-tint="new"] > rect.cell-frame { stroke: var(--mapped); }
+body.cmp-on [data-diff-tint="chg"] > rect.cell-frame { stroke: #fbbf24; }
+body.cmp-on [data-diff-tint="rem"] > rect.cell-frame { stroke: var(--unmapped); }
+
 .status-badge {
   display: inline-block; margin-left: 0.35rem;
   padding: 0.02rem 0.35rem; border-radius: 8px;
@@ -650,7 +679,8 @@ PAGE_JS = """
       q('#compare-strip').style.display = compareOn ? 'block' : 'none';
       if(compareOn){ renderCompareStrip(); applyStatusToDom(); }
       else { qa('.cmp-svg-badge').forEach(function(el){ el.remove(); });
-             qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); }); }
+             qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); });
+             qa('[data-diff-tint]').forEach(function(el){ el.removeAttribute('data-diff-tint'); }); }
       // Repaint lists + removed sections so state matches the toggle.
       renderList();
       renderMetricsSidebar();
@@ -724,21 +754,38 @@ PAGE_JS = """
     }).join('');
   }
 
+  function dominantTint(r){
+    // Return 'new'|'chg'|'rem'|'mix' for a rollup, or null when there's no
+    // activity. "Dominant" = strictly majority of activity; otherwise 'mix'.
+    var n = r["new"]||0, c = r["changed"]||0, x = r["removed"]||0;
+    var total = n + c + x;
+    if(total === 0) return null;
+    if(n >= 0.6 * total) return 'new';
+    if(c >= 0.6 * total) return 'chg';
+    if(x >= 0.6 * total) return 'rem';
+    return 'mix';
+  }
+
   function applyStatusToDom(){
     // Inject a small "+N ~M -K" diff badge into every uarch box that has
     // activity vs the baseline. Uses ARCH.diff.path_rollup keyed by the
     // node's data-path attribute so nested sub-boxes get their own tally.
+    // Also stamps data-diff-tint on the <g> so CSS can tint the fill.
     if(!ARCH.diff || !ARCH.diff.path_rollup) return;
     var rollup = ARCH.diff.path_rollup;
-    // Strip any prior badges before recomputing (idempotent).
+    // Strip any prior badges + tints before recomputing (idempotent).
     qa('.cmp-svg-badge').forEach(function(el){ el.remove(); });
     qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); });
+    qa('[data-diff-tint]').forEach(function(el){ el.removeAttribute('data-diff-tint'); });
     qa('[data-path]').forEach(function(g){
       var p = g.getAttribute('data-path');
       var r = rollup[p];
       if(!r) return;
       var activity = (r["new"]||0) + (r["changed"]||0) + (r["removed"]||0);
       if(activity === 0) return;
+      // Tag the group with its dominant status so CSS can tint the fill.
+      var tint = dominantTint(r);
+      if(tint) g.setAttribute('data-diff-tint', tint);
       // Determine the box's rect so we can anchor the badge to its top-right.
       var rect = g.querySelector(':scope > rect.cell-frame');
       if(!rect) return;
