@@ -2785,12 +2785,15 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
     periph_h = max(upi_h, pcie_h, cxl_h)
 
     # Layout Y coordinates. The gap between the peripherals row and the CHA
-    # hub must be big enough that UPI/PCIe/CXL ↔ CHA arrows are visibly long
-    # (short arrows look glued to the box and don't read as "traffic flow").
-    y1 = margin              # peripherals row
-    y2 = y1 + periph_h + 90  # CHA
-    y3 = y2 + cha_h + 34     # MC
-    y4 = y3 + mc_h + 40      # Power
+    # hub is proportional to the peripheral height — enough that the ↔ arrows
+    # to/from CHA read as flow rather than a seam. Short peripheral rows use
+    # a min gap of 60 px so the arrows are always long enough to have a
+    # visible shaft (not just an arrowhead butting up against the box).
+    periph_to_hub = max(60, int(periph_h * 1.1))
+    y1 = margin                          # peripherals row
+    y2 = y1 + periph_h + periph_to_hub   # CHA
+    y3 = y2 + cha_h + 34                 # MC
+    y4 = y3 + mc_h + 40                  # Power
     canvas_h = y4 + pw_h + margin
 
     # X coordinates
