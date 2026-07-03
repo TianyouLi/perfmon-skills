@@ -213,6 +213,50 @@ ul.event-list li.selected { background: var(--selected); color: white; }
 }
 .metric-detail .feeder.primary { border-color: var(--accent); }
 
+/* TMA tree — JS-rendered */
+.tma-toolbar {
+  display: flex; gap: 0.5rem; align-items: center;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.4rem;
+}
+.tma-btn {
+  background: var(--subbox); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem; font-family: inherit; cursor: pointer;
+}
+.tma-btn:hover { border-color: var(--accent); background: var(--subbox-hover); }
+.tma-hint {
+  font-size: 0.7rem; color: var(--muted); font-style: italic;
+  margin-left: auto;
+}
+.tma-node rect { fill: var(--box); stroke: var(--border); stroke-width: 1; }
+.tma-node:hover > rect { fill: var(--box-hover); stroke: var(--accent); cursor: pointer; }
+.tma-node.selected > rect { fill: rgba(56,189,248,0.25); stroke: var(--accent); stroke-width: 2; }
+.tma-node text.title { fill: var(--ink); font-size: 11px; font-weight: 500; pointer-events: none; }
+.tma-node text.lvl { fill: var(--accent); font-size: 9px; font-weight: 600; pointer-events: none; }
+.tma-node.has-thr > rect { stroke: var(--accent); }
+.tma-connector { stroke: var(--border); stroke-width: 1; fill: none; }
+.tma-empty { fill: var(--muted); font-size: 13px; font-style: italic; }
+.tma-root-sep { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }
+
+/* Toggle glyph on internal nodes */
+.tma-toggle {
+  cursor: pointer;
+}
+.tma-toggle circle {
+  fill: #0b1220; stroke: var(--muted); stroke-width: 1;
+}
+.tma-toggle:hover circle { stroke: var(--accent); }
+.tma-toggle text {
+  fill: var(--muted); font-size: 12px; font-weight: 700;
+  text-anchor: middle; dominant-baseline: middle;
+  pointer-events: none; font-family: ui-monospace, monospace;
+}
+.tma-toggle:hover text { fill: var(--accent); }
+.tma-node.collapsed .tma-toggle text { fill: var(--accent); }
+
 .detail-section {
   margin-top: 0.9rem;
   padding-top: 0.6rem;
@@ -710,7 +754,13 @@ PAGE_JS = """
     state.metrics.metric = name;
     state.detail.kind = 'metric';
     state.detail.name = name;
-    // Clear only the metrics-view highlights (leave the events SVG alone).
+    // If the target metric is inside a collapsed subtree, expand its ancestors
+    // and re-render before we try to highlight it.
+    var wasReflowed = false;
+    if(tmaExpandAncestors && tmaExpandAncestors(name)){
+      wasReflowed = true;
+      renderTmaTree();
+    }
     qa('#view-metrics .selected').forEach(function(el){ el.classList.remove('selected'); });
     var svgEl = q('[data-metric="'+cssEsc(name)+'"]');
     if(svgEl) svgEl.classList.add('selected');
@@ -957,6 +1007,284 @@ PAGE_JS = """
   }
 
   // -------- Populate metrics tab sidebar lists --------
+  // ============================================================
+  // TMA tree — layout + render in JS, so expand/collapse can re-flow
+  // ============================================================
+  var TMA_CFG = {
+    LEAF_W: 118, LEAF_GAP: 8,
+    NODE_H: 28, ROW_H: 62,
+    TOP_PAD: 24, LEFT_PAD: 24, BOTTOM_PAD: 24,
+    INTER_ROOT_GAP: 34,
+    // Nodes at depth ≥ COLLAPSE_DEPTH start collapsed. depth is 0-based within
+    // an L1 subtree, so depth=1 means L2 (children of the L1 root). The default
+    // shows L1 and L2 open, hides L3+.
+    COLLAPSE_DEPTH: 1,
+  };
+
+  // Collapsed set — keyed by metric name. If a name is in this set, its
+  // children are hidden.
+  var TMA_COLLAPSED = new Set();
+
+  function tmaInitCollapse(){
+    TMA_COLLAPSED.clear();
+    function walk(node, depth){
+      // Collapse this node if it's internal AND at/beyond COLLAPSE_DEPTH.
+      if(node.children && node.children.length && depth >= TMA_CFG.COLLAPSE_DEPTH){
+        TMA_COLLAPSED.add(node.name);
+      }
+      (node.children || []).forEach(function(c){ walk(c, depth + 1); });
+    }
+    (ARCH.tma_roots || []).forEach(function(r){ walk(r, 0); });
+  }
+
+  function tmaIsCollapsed(name){ return TMA_COLLAPSED.has(name); }
+
+  // Layout a subtree starting at cursorX. Returns width; appends layout rows.
+  function tmaLayoutSubtree(node, depth, cursorX, rows){
+    var effChildren = (node.children && !tmaIsCollapsed(node.name)) ? node.children : [];
+    if(effChildren.length === 0){
+      var w = TMA_CFG.LEAF_W;
+      rows.push({
+        node: node, depth: depth,
+        cx: cursorX + w / 2,
+        y: TMA_CFG.TOP_PAD + depth * TMA_CFG.ROW_H,
+        collapsed: tmaIsCollapsed(node.name) && (node.children||[]).length > 0,
+      });
+      return w;
+    }
+    var childStart = cursorX;
+    var childCxs = [];
+    for(var i = 0; i < effChildren.length; i++){
+      if(i > 0) childStart += TMA_CFG.LEAF_GAP;
+      var cw = tmaLayoutSubtree(effChildren[i], depth + 1, childStart, rows);
+      childCxs.push(childStart + cw / 2);
+      childStart += cw;
+    }
+    var subtreeW = childStart - cursorX;
+    if(subtreeW < TMA_CFG.LEAF_W){
+      var shift = (TMA_CFG.LEAF_W - subtreeW) / 2;
+      var descendants = tmaCountLive(node) - 1;
+      for(var k = rows.length - descendants; k < rows.length; k++){
+        rows[k].cx += shift;
+      }
+      for(var j = 0; j < childCxs.length; j++) childCxs[j] += shift;
+      subtreeW = TMA_CFG.LEAF_W;
+    }
+    var parentCx = (childCxs[0] + childCxs[childCxs.length - 1]) / 2;
+    rows.push({
+      node: node, depth: depth,
+      cx: parentCx,
+      y: TMA_CFG.TOP_PAD + depth * TMA_CFG.ROW_H,
+      collapsed: false,
+    });
+    return subtreeW;
+  }
+
+  // Count nodes in a subtree that would render right now (respects collapse).
+  function tmaCountLive(node){
+    if(!node.children || tmaIsCollapsed(node.name)) return 1;
+    var n = 1;
+    for(var i = 0; i < node.children.length; i++){
+      n += tmaCountLive(node.children[i]);
+    }
+    return n;
+  }
+
+  function tmaMaxDepth(rows){
+    var d = 0;
+    for(var i = 0; i < rows.length; i++){
+      if(rows[i].depth > d) d = rows[i].depth;
+    }
+    return d;
+  }
+
+  function tmaEscape(s){
+    return String(s || '').replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function tmaShort(s, n){
+    if(s.length <= n) return s;
+    return s.slice(0, n - 1) + '…';
+  }
+
+  function renderTmaTree(){
+    var container = q('#tma-svg-container');
+    if(!container) return;
+    var roots = ARCH.tma_roots || [];
+    if(!roots.length){ container.innerHTML = ''; return; }
+
+    // Lay out each L1 root's subtree standalone, then stack vertically.
+    var subtrees = [];
+    var maxSubtreeW = 0;
+    roots.forEach(function(root){
+      var rows = [];
+      var w = tmaLayoutSubtree(root, 0, TMA_CFG.LEFT_PAD, rows);
+      subtrees.push({rows: rows, width: w, root: root});
+      maxSubtreeW = Math.max(maxSubtreeW, Math.round(w + 2 * TMA_CFG.LEFT_PAD));
+    });
+
+    var canvasW = Math.max(320, maxSubtreeW);
+    var yOffset = TMA_CFG.TOP_PAD;
+    subtrees.forEach(function(st){
+      for(var i = 0; i < st.rows.length; i++){
+        st.rows[i].y += yOffset - TMA_CFG.TOP_PAD;
+      }
+      var d = tmaMaxDepth(st.rows);
+      yOffset += (d + 1) * TMA_CFG.ROW_H + TMA_CFG.INTER_ROOT_GAP;
+    });
+    // Centre each subtree horizontally in the canvas.
+    subtrees.forEach(function(st){
+      var pad = (canvasW - st.width) / 2 - TMA_CFG.LEFT_PAD;
+      if(pad > 0){
+        for(var i = 0; i < st.rows.length; i++) st.rows[i].cx += pad;
+      }
+    });
+    var canvasH = yOffset - TMA_CFG.INTER_ROOT_GAP + TMA_CFG.BOTTOM_PAD;
+
+    var parts = [
+      '<svg viewBox="0 0 '+canvasW+' '+canvasH+'" width="'+canvasW+'" height="'+canvasH+'" role="img">'
+    ];
+
+    // Root separators
+    var yCursor = TMA_CFG.TOP_PAD;
+    for(var s = 0; s < subtrees.length - 1; s++){
+      var d = tmaMaxDepth(subtrees[s].rows);
+      yCursor += (d + 1) * TMA_CFG.ROW_H;
+      var sepY = yCursor + TMA_CFG.INTER_ROOT_GAP / 2;
+      parts.push('<line class="tma-root-sep" x1="0" y1="'+sepY+'" x2="'+canvasW+'" y2="'+sepY+'"/>');
+      yCursor += TMA_CFG.INTER_ROOT_GAP;
+    }
+
+    // Index rows by node reference for connector lookup.
+    var allRows = [];
+    subtrees.forEach(function(st){ st.rows.forEach(function(r){ allRows.push(r); }); });
+    var rowByNode = new Map();
+    allRows.forEach(function(r){ rowByNode.set(r.node, r); });
+
+    // Elbow connectors behind boxes
+    parts.push('<g class="tma-connectors">');
+    allRows.forEach(function(r){
+      var node = r.node;
+      if(!node.children || tmaIsCollapsed(node.name)) return;
+      var pcx = r.cx;
+      var pbot = r.y + TMA_CFG.NODE_H;
+      var busY = r.y + TMA_CFG.NODE_H + (TMA_CFG.ROW_H - TMA_CFG.NODE_H) / 2;
+      parts.push('<path class="tma-connector" d="M '+pcx+' '+pbot+' L '+pcx+' '+busY+'"/>');
+      var childCxs = node.children.map(function(c){ return rowByNode.get(c).cx; });
+      if(childCxs.length > 1){
+        parts.push('<path class="tma-connector" d="M '+Math.min.apply(null, childCxs)+' '+busY+' L '+Math.max.apply(null, childCxs)+' '+busY+'"/>');
+      }
+      childCxs.forEach(function(cx){
+        parts.push('<path class="tma-connector" d="M '+cx+' '+busY+' L '+cx+' '+(r.y + TMA_CFG.ROW_H)+'"/>');
+      });
+    });
+    parts.push('</g>');
+
+    // Node boxes
+    allRows.forEach(function(r){
+      var node = r.node;
+      var isInternal = !!(node.children && node.children.length);
+      var collapsed = tmaIsCollapsed(node.name);
+      var hasThr = false;
+      var m = ARCH.metrics[node.name];
+      if(m && m.threshold_formula) hasThr = true;
+      var cls = ['tma-node'];
+      if(hasThr) cls.push('has-thr');
+      if(collapsed) cls.push('collapsed');
+      var w = TMA_CFG.LEAF_W;
+      var x = r.cx - w / 2;
+      var y = r.y;
+      var label = tmaShort(node.name, 15);
+      var lvlBits = 'L' + node.level;
+      if(hasThr) lvlBits += ' ⚑';
+      parts.push('<g class="'+cls.join(' ')+'" data-metric="'+tmaEscape(node.name)+'">');
+      parts.push('<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+TMA_CFG.NODE_H+'" rx="4"/>');
+      parts.push('<text class="title" x="'+r.cx+'" y="'+(y + 14)+'" text-anchor="middle">'+tmaEscape(label)+'</text>');
+      parts.push('<text class="lvl" x="'+r.cx+'" y="'+(y + 24)+'" text-anchor="middle">'+tmaEscape(lvlBits)+'</text>');
+      parts.push('<title>'+tmaEscape(node.name)+'</title>');
+      if(isInternal){
+        // Toggle glyph pinned to the top-right corner of the box.
+        var tx = x + w - 8, ty = y + 4;
+        var glyph = collapsed ? '+' : '−';
+        parts.push('<g class="tma-toggle" data-toggle="'+tmaEscape(node.name)+'">');
+        parts.push('<circle cx="'+tx+'" cy="'+ty+'" r="7"/>');
+        parts.push('<text x="'+tx+'" y="'+(ty + 1)+'">'+glyph+'</text>');
+        parts.push('</g>');
+      }
+      parts.push('</g>');
+    });
+
+    parts.push('</svg>');
+    container.innerHTML = parts.join('');
+    wireTmaClicks();
+
+    // Re-apply selection highlight if state.metrics.metric exists
+    if(state.metrics.metric){
+      var el = q('[data-metric="'+cssEsc(state.metrics.metric)+'"]');
+      if(el) el.classList.add('selected');
+    }
+  }
+
+  function wireTmaClicks(){
+    // Node click = select metric. Toggle click stops propagation and re-lays out.
+    qa('#tma-svg-container [data-metric]').forEach(function(el){
+      el.addEventListener('click', function(e){
+        e.preventDefault(); e.stopPropagation();
+        selectMetric(el.getAttribute('data-metric'));
+      });
+    });
+    qa('#tma-svg-container [data-toggle]').forEach(function(el){
+      el.addEventListener('click', function(e){
+        e.preventDefault(); e.stopPropagation();
+        var name = el.getAttribute('data-toggle');
+        if(TMA_COLLAPSED.has(name)) TMA_COLLAPSED.delete(name);
+        else TMA_COLLAPSED.add(name);
+        renderTmaTree();
+      });
+    });
+    qa('.tma-btn[data-tma-action]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var act = btn.getAttribute('data-tma-action');
+        if(act === 'expand-all'){
+          TMA_COLLAPSED.clear();
+        } else if(act === 'collapse-all'){
+          TMA_COLLAPSED.clear();
+          // Collapse every node at or beyond L2 (depth 1)
+          function walk(node, depth){
+            if(node.children && node.children.length && depth >= 1){
+              TMA_COLLAPSED.add(node.name);
+            }
+            (node.children || []).forEach(function(c){ walk(c, depth+1); });
+          }
+          (ARCH.tma_roots || []).forEach(function(r){ walk(r, 0); });
+        }
+        renderTmaTree();
+      });
+    });
+  }
+
+  // Expand ancestors of the given metric so its node is visible in the tree.
+  function tmaExpandAncestors(metricName){
+    if(!ARCH.tma_roots || !ARCH.tma_roots.length) return false;
+    var found = false;
+    function walk(node, ancestors){
+      if(node.name === metricName){
+        ancestors.forEach(function(a){ TMA_COLLAPSED.delete(a.name); });
+        found = true;
+        return true;
+      }
+      var kids = node.children || [];
+      for(var i = 0; i < kids.length; i++){
+        if(walk(kids[i], ancestors.concat([node]))) return true;
+      }
+      return false;
+    }
+    ARCH.tma_roots.some(function(r){ return walk(r, []); });
+    return found;
+  }
+
   function renderMetricsSidebar(){
     // Bottlenecks
     var bcount = q('#bottleneck-count');
@@ -1193,6 +1521,8 @@ PAGE_JS = """
     wireTabs();
     wireSvg();
     wireSearch();
+    tmaInitCollapse();
+    renderTmaTree();
     renderMetricsSidebar();
     renderList();
     renderDetail();
@@ -1383,102 +1713,19 @@ def _by_id(cells: list) -> dict:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# TMA tree renderer — top-down family-tree layout
-#
-# L1 roots at the top. Each node's children fan out horizontally below it.
-# Layout pass:
-#   1. Bottom-up: compute the horizontal footprint of each subtree so leaves
-#      never overlap. Internal nodes get max(own_width, sum(children_widths)).
-#   2. Top-down: assign each node an x centred over its subtree.
-#   3. y is determined by depth × row spacing.
-# Elbow connectors go straight down from parent bottom, then horizontally,
-# then down into child top.
+# TMA tree renderer.
+# The actual top-down layout runs in JavaScript so the user can toggle
+# expand/collapse without a page round-trip. Python only emits a container.
 # ---------------------------------------------------------------------------
 
-TMA_LEAF_W = 118          # each leaf occupies at least this much horizontal space
-TMA_LEAF_GAP = 8          # min gap between sibling subtrees
-TMA_NODE_H = 28           # box height
-TMA_ROW_H = 62            # vertical distance from row N to row N+1
-TMA_ROOT_GAP = 40         # extra gap between L1 subtrees
-TMA_TOP_PAD = 24
-TMA_LEFT_PAD = 24
-TMA_BOTTOM_PAD = 24
-
-
-def _tma_layout_subtree(node, depth, cursor_x, rows):
-    """Recursively lay out a subtree starting at cursor_x. Returns the total
-    horizontal width consumed by this subtree. Appends layout dicts to `rows`.
-    """
-    if not node.children:
-        # Leaf: fixed width
-        w = TMA_LEAF_W
-        rows.append({
-            "node": node,
-            "depth": depth,
-            "cx": cursor_x + w / 2,
-            "y": TMA_TOP_PAD + depth * TMA_ROW_H,
-        })
-        return w
-
-    # Layout children first, side by side
-    child_start = cursor_x
-    child_center_xs = []
-    for i, c in enumerate(node.children):
-        if i > 0:
-            child_start += TMA_LEAF_GAP
-        child_w = _tma_layout_subtree(c, depth + 1, child_start, rows)
-        child_center_xs.append(child_start + child_w / 2)
-        child_start += child_w
-
-    subtree_w = child_start - cursor_x
-    # Parent width — must accommodate its own box (TMA_LEAF_W) even if kids are
-    # narrower.
-    if subtree_w < TMA_LEAF_W:
-        # Center the narrow subtree under the parent. We've appended all
-        # descendants to `rows` but not the parent itself yet, so the shift
-        # applies to (subtree_size - 1) trailing rows.
-        shift = (TMA_LEAF_W - subtree_w) / 2
-        descendants = _count_subtree(node) - 1
-        for r in rows[-descendants:]:
-            r["cx"] += shift
-        for k in range(len(child_center_xs)):
-            child_center_xs[k] += shift
-        subtree_w = TMA_LEAF_W
-
-    parent_cx = (child_center_xs[0] + child_center_xs[-1]) / 2
-    rows.append({
-        "node": node,
-        "depth": depth,
-        "cx": parent_cx,
-        "y": TMA_TOP_PAD + depth * TMA_ROW_H,
-    })
-    return subtree_w
-
-
-def _count_subtree(node):
-    n = 1
-    for c in node.children:
-        n += _count_subtree(c)
-    return n
-
-
-def _subtree_max_depth(node, depth=0):
-    if not node.children:
-        return depth
-    return max(_subtree_max_depth(c, depth + 1) for c in node.children)
-
-
 def render_tma_svg(tree: TmaTree, target_width: int) -> str:
-    """Render the TMA tree as a set of top-down family trees, one per L1 root,
-    stacked vertically. Each root's subtree is a compact standalone tree with
-    the root at the top and its descendants fanning out below.
+    """Emit a placeholder container. The actual TMA tree is laid out and
+    rendered in JavaScript (see PAGE_JS::renderTmaTree) so the user can
+    toggle expand/collapse without a round-trip.
 
-    Result: canvas width = widest single L1 subtree (not the sum of all four),
-    canvas height ≈ sum of per-L1 subtree depths. Much shorter horizontal
-    scroll than laying all four subtrees side by side.
+    We still emit the empty-platform placeholder here since it never changes.
     """
     if not tree.roots:
-        # Placeholder — platforms with no TMA hierarchy (e.g. CWF).
         return (
             f'<svg viewBox="0 0 {target_width} 60" width="{target_width}" '
             f'height="60" role="img">'
@@ -1486,123 +1733,15 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
             f'text-anchor="middle">No TMA hierarchy defined for this platform.</text>'
             f'</svg>'
         )
-
-    # Layout each L1 subtree independently, then stack vertically.
-    subtrees = []
-    max_subtree_w = 0
-    for root in tree.roots:
-        rows = []
-        w = _tma_layout_subtree(root, 0, TMA_LEFT_PAD, rows)
-        subtrees.append({"rows": rows, "width": w, "root": root})
-        max_subtree_w = max(max_subtree_w, int(w + 2 * TMA_LEFT_PAD))
-
-    # Vertical stacking: each subtree row starts after the previous ended.
-    # Compute cumulative y offset. `y_offset` shifts every row's y for one
-    # subtree.
-    canvas_w = max(target_width, max_subtree_w)
-    y_offset = TMA_TOP_PAD
-    inter_root_gap = 34
-    for st in subtrees:
-        # Shift this subtree's rows down by y_offset (minus the TOP_PAD which
-        # is already baked into row["y"] for depth=0).
-        for r in st["rows"]:
-            r["y"] += y_offset - TMA_TOP_PAD
-        depth = max((r["depth"] for r in st["rows"]), default=0)
-        y_offset += (depth + 1) * TMA_ROW_H + inter_root_gap
-
-    # Centre each subtree horizontally within the canvas so wide siblings
-    # don't crowd the left edge and short subtrees look balanced.
-    for st in subtrees:
-        pad = (canvas_w - st["width"]) / 2 - TMA_LEFT_PAD
-        if pad > 0:
-            for r in st["rows"]:
-                r["cx"] += pad
-
-    canvas_h = y_offset - inter_root_gap + TMA_BOTTOM_PAD
-
-    parts = [
-        f'<svg viewBox="0 0 {canvas_w} {canvas_h}" width="{canvas_w}" '
-        f'height="{canvas_h}" role="img">'
-    ]
-    parts.append('<style>'
-                 '.tma-node rect { fill: var(--box); stroke: var(--border); stroke-width: 1; }'
-                 '.tma-node:hover rect { fill: var(--box-hover); stroke: var(--accent); cursor: pointer; }'
-                 '.tma-node.selected rect { fill: rgba(56,189,248,0.25); stroke: var(--accent); stroke-width: 2; }'
-                 '.tma-node text.title { fill: var(--ink); font-size: 11px; font-weight: 500; pointer-events: none; }'
-                 '.tma-node text.lvl { fill: var(--accent); font-size: 9px; font-weight: 600; pointer-events: none; }'
-                 '.tma-node.has-thr rect { stroke: var(--accent); }'
-                 '.tma-connector { stroke: var(--border); stroke-width: 1; fill: none; }'
-                 '.tma-empty { fill: var(--muted); font-size: 13px; font-style: italic; }'
-                 '.tma-root-sep { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }'
-                 '</style>')
-
-    all_rows = []
-    for st in subtrees:
-        all_rows.extend(st["rows"])
-    row_by_id = {id(r["node"]): r for r in all_rows}
-
-    # Optional: dashed horizontal separators between L1 subtrees
-    y_cursor = TMA_TOP_PAD
-    for i, st in enumerate(subtrees[:-1]):
-        depth = max(r["depth"] for r in st["rows"])
-        y_cursor += (depth + 1) * TMA_ROW_H
-        sep_y = y_cursor + inter_root_gap / 2
-        parts.append(
-            f'<line class="tma-root-sep" x1="0" y1="{sep_y}" '
-            f'x2="{canvas_w}" y2="{sep_y}"/>'
-        )
-        y_cursor += inter_root_gap
-
-    # Elbow connectors (behind boxes).
-    parts.append('<g class="tma-connectors">')
-    for r in all_rows:
-        node = r["node"]
-        if not node.children:
-            continue
-        parent_cx = r["cx"]
-        parent_bottom = r["y"] + TMA_NODE_H
-        bus_y = r["y"] + TMA_NODE_H + (TMA_ROW_H - TMA_NODE_H) / 2
-        parts.append(
-            f'<path class="tma-connector" '
-            f'd="M {parent_cx} {parent_bottom} L {parent_cx} {bus_y}"/>'
-        )
-        child_cxs = [row_by_id[id(c)]["cx"] for c in node.children]
-        if len(child_cxs) > 1:
-            parts.append(
-                f'<path class="tma-connector" '
-                f'd="M {min(child_cxs)} {bus_y} L {max(child_cxs)} {bus_y}"/>'
-            )
-        for cx in child_cxs:
-            child_top = r["y"] + TMA_ROW_H
-            parts.append(
-                f'<path class="tma-connector" '
-                f'd="M {cx} {bus_y} L {cx} {child_top}"/>'
-            )
-    parts.append('</g>')
-
-    for r in all_rows:
-        node = r["node"]
-        m = node.metric
-        has_thr = bool((m.threshold or {}).get("Formula"))
-        cls = "tma-node has-thr" if has_thr else "tma-node"
-        w = TMA_LEAF_W
-        x = r["cx"] - w / 2
-        y = r["y"]
-        label = _short(m.name, maxlen=15)
-        lvl_label = f'L{m.level}{" ⚑" if has_thr else ""}'
-        parts.append(
-            f'<g class="{cls}" data-metric="{html.escape(m.name)}">'
-            f'<rect x="{x}" y="{y}" width="{w}" height="{TMA_NODE_H}" rx="4"/>'
-            f'<text class="title" x="{r["cx"]}" y="{y + 14}" text-anchor="middle">'
-            f'{html.escape(label)}</text>'
-            f'<text class="lvl" x="{r["cx"]}" y="{y + 24}" text-anchor="middle">'
-            f'{lvl_label}</text>'
-            f'<title>{html.escape(m.name)}</title>'
-            f'</g>'
-        )
-
-    parts.append('</svg>')
-    return "\n".join(parts)
+    # Real trees are rendered by JS at DOMContentLoaded time.
+    return (
+        '<div class="tma-toolbar">'
+        '<button class="tma-btn" data-tma-action="expand-all">Expand all</button>'
+        '<button class="tma-btn" data-tma-action="collapse-all">Collapse to L2</button>'
+        '<span class="tma-hint">Click <b>+</b>/<b>−</b> on a node to toggle its subtree.</span>'
+        '</div>'
+        '<div id="tma-svg-container"></div>'
+    )
 
 
 def _core_canvas_width(cells: list, is_ecore: bool = False) -> int:
