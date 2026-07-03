@@ -658,8 +658,7 @@ text.node-diff .diff-rem { fill: var(--unmapped); }
 .group-label { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }
 .flow-label { fill: var(--muted); font-size: 10px; font-style: italic; }
 .flow line, .flow path { stroke: var(--muted); stroke-width: 1.5; fill: none; }
-/* "from core L3/Offcore" — thinner + dimmer since it's contextual */
-.flow-external { stroke: var(--muted); stroke-width: 0.8; fill: none; opacity: 0.55; }
+/* Small contextual hint (currently used for "from core L3/Offcore ↓") */
 .flow-label-dim { opacity: 0.6; font-size: 9px; }
 .flow.control line, .flow.control path { stroke-dasharray: 4 3; }
 """
@@ -2420,9 +2419,6 @@ def _arrow_defs():
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
     </marker>
-    <marker id="arrow-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" opacity="0.55"/>
-    </marker>
   </defs>'''
 
 
@@ -2860,17 +2856,14 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
     # -------- Arrows --------
     parts.append('<g class="flow">')
 
-    # From core into CHA (from top of canvas). Rendered thinner/dimmer since
-    # it's a "coming from outside the uncore" hint rather than a real
-    # uncore-internal edge.
+    # Small "from core L3/Offcore ↓" label above CHA — a contextual hint,
+    # not a drawn edge. The line-and-arrow this used to have started at
+    # y=0 (empty canvas above the hub) and didn't correspond to any real
+    # element the reader could trace, so we keep just the label.
     hub_top_cx = x_hub + inner_w / 2
     parts.append(
-        f'<line class="flow-external" x1="{hub_top_cx}" y1="0" '
-        f'x2="{hub_top_cx}" y2="{y2 - 4}" marker-end="url(#arrow-dim)"/>'
-    )
-    parts.append(
-        f'<text x="{hub_top_cx + 8}" y="18" class="flow-label flow-label-dim">'
-        f'from core L3/Offcore</text>'
+        f'<text x="{hub_top_cx}" y="{y2 - 8}" text-anchor="middle" '
+        f'class="flow-label flow-label-dim">from core L3/Offcore ↓</text>'
     )
 
     # Peripherals ↔ CHA. All peripheral boxes are bottom-aligned at
