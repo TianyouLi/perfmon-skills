@@ -1207,7 +1207,9 @@ PAGE_JS = """
     state.events.eventName = name;
     state.detail.kind = 'event';
     state.detail.name = name;
-    qa('#view-events #pane-list li.selected').forEach(function(el){ el.classList.remove('selected'); });
+    // Clear any previously-selected li in the shared top-right pane.
+    // The pane isn't nested inside #view-events, so scope directly to it.
+    qa('#pane-list li.selected').forEach(function(el){ el.classList.remove('selected'); });
     var target = q('#pane-list li[data-ev="'+encodeURIComponent(name)+'"]');
     if(target) target.classList.add('selected');
     renderDetail();
