@@ -1462,8 +1462,21 @@ def _count_subtree(node):
     return n
 
 
+def _subtree_max_depth(node, depth=0):
+    if not node.children:
+        return depth
+    return max(_subtree_max_depth(c, depth + 1) for c in node.children)
+
+
 def render_tma_svg(tree: TmaTree, target_width: int) -> str:
-    """Render the TMA tree as a top-down family tree."""
+    """Render the TMA tree as a set of top-down family trees, one per L1 root,
+    stacked vertically. Each root's subtree is a compact standalone tree with
+    the root at the top and its descendants fanning out below.
+
+    Result: canvas width = widest single L1 subtree (not the sum of all four),
+    canvas height ≈ sum of per-L1 subtree depths. Much shorter horizontal
+    scroll than laying all four subtrees side by side.
+    """
     if not tree.roots:
         # Placeholder — platforms with no TMA hierarchy (e.g. CWF).
         return (
@@ -1474,17 +1487,38 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
             f'</svg>'
         )
 
-    rows = []
-    cursor_x = TMA_LEFT_PAD
-    for i, root in enumerate(tree.roots):
-        if i > 0:
-            cursor_x += TMA_ROOT_GAP
-        w = _tma_layout_subtree(root, 0, cursor_x, rows)
-        cursor_x += w
+    # Layout each L1 subtree independently, then stack vertically.
+    subtrees = []
+    max_subtree_w = 0
+    for root in tree.roots:
+        rows = []
+        w = _tma_layout_subtree(root, 0, TMA_LEFT_PAD, rows)
+        subtrees.append({"rows": rows, "width": w, "root": root})
+        max_subtree_w = max(max_subtree_w, int(w + 2 * TMA_LEFT_PAD))
 
-    max_depth = max(r["depth"] for r in rows)
-    canvas_w = max(target_width, int(cursor_x + TMA_LEFT_PAD))
-    canvas_h = TMA_TOP_PAD + (max_depth + 1) * TMA_ROW_H + TMA_BOTTOM_PAD
+    # Vertical stacking: each subtree row starts after the previous ended.
+    # Compute cumulative y offset. `y_offset` shifts every row's y for one
+    # subtree.
+    canvas_w = max(target_width, max_subtree_w)
+    y_offset = TMA_TOP_PAD
+    inter_root_gap = 34
+    for st in subtrees:
+        # Shift this subtree's rows down by y_offset (minus the TOP_PAD which
+        # is already baked into row["y"] for depth=0).
+        for r in st["rows"]:
+            r["y"] += y_offset - TMA_TOP_PAD
+        depth = max((r["depth"] for r in st["rows"]), default=0)
+        y_offset += (depth + 1) * TMA_ROW_H + inter_root_gap
+
+    # Centre each subtree horizontally within the canvas so wide siblings
+    # don't crowd the left edge and short subtrees look balanced.
+    for st in subtrees:
+        pad = (canvas_w - st["width"]) / 2 - TMA_LEFT_PAD
+        if pad > 0:
+            for r in st["rows"]:
+                r["cx"] += pad
+
+    canvas_h = y_offset - inter_root_gap + TMA_BOTTOM_PAD
 
     parts = [
         f'<svg viewBox="0 0 {canvas_w} {canvas_h}" width="{canvas_w}" '
@@ -1499,36 +1533,45 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
                  '.tma-node.has-thr rect { stroke: var(--accent); }'
                  '.tma-connector { stroke: var(--border); stroke-width: 1; fill: none; }'
                  '.tma-empty { fill: var(--muted); font-size: 13px; font-style: italic; }'
+                 '.tma-root-sep { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }'
                  '</style>')
 
-    # Index rows by node identity for connector lookup.
-    row_by_id = {id(r["node"]): r for r in rows}
+    all_rows = []
+    for st in subtrees:
+        all_rows.extend(st["rows"])
+    row_by_id = {id(r["node"]): r for r in all_rows}
 
-    # Elbows first, behind the boxes.
+    # Optional: dashed horizontal separators between L1 subtrees
+    y_cursor = TMA_TOP_PAD
+    for i, st in enumerate(subtrees[:-1]):
+        depth = max(r["depth"] for r in st["rows"])
+        y_cursor += (depth + 1) * TMA_ROW_H
+        sep_y = y_cursor + inter_root_gap / 2
+        parts.append(
+            f'<line class="tma-root-sep" x1="0" y1="{sep_y}" '
+            f'x2="{canvas_w}" y2="{sep_y}"/>'
+        )
+        y_cursor += inter_root_gap
+
+    # Elbow connectors (behind boxes).
     parts.append('<g class="tma-connectors">')
-    for r in rows:
+    for r in all_rows:
         node = r["node"]
         if not node.children:
             continue
         parent_cx = r["cx"]
         parent_bottom = r["y"] + TMA_NODE_H
-        # A single horizontal bus at the midpoint between the parent row and
-        # the child row makes the tree readable even when many siblings share
-        # a parent.
         bus_y = r["y"] + TMA_NODE_H + (TMA_ROW_H - TMA_NODE_H) / 2
-        # Vertical stem down from parent to bus
         parts.append(
             f'<path class="tma-connector" '
             f'd="M {parent_cx} {parent_bottom} L {parent_cx} {bus_y}"/>'
         )
-        # Horizontal bus spanning first→last child (if >1 kid)
         child_cxs = [row_by_id[id(c)]["cx"] for c in node.children]
         if len(child_cxs) > 1:
             parts.append(
                 f'<path class="tma-connector" '
                 f'd="M {min(child_cxs)} {bus_y} L {max(child_cxs)} {bus_y}"/>'
             )
-        # Vertical stems from bus down to each child top
         for cx in child_cxs:
             child_top = r["y"] + TMA_ROW_H
             parts.append(
@@ -1537,8 +1580,7 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
             )
     parts.append('</g>')
 
-    # Node boxes
-    for r in rows:
+    for r in all_rows:
         node = r["node"]
         m = node.metric
         has_thr = bool((m.threshold or {}).get("Formula"))
