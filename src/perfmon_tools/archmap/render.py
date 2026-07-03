@@ -118,6 +118,13 @@ header .stats-label {
 .diagram-block h2 {
   margin: 0 0 0.5rem; font-size: 0.8rem;
   color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em;
+  display: flex; gap: 0.4rem; align-items: center;
+}
+.diagram-block h2 .badge {
+  background: var(--accent); color: #0f172a;
+  padding: 0.05rem 0.4rem; border-radius: 8px;
+  font-size: 0.7rem; font-weight: 700;
+  text-transform: none; letter-spacing: normal;
 }
 svg { display: block; margin: 0 auto; }
 
@@ -2794,9 +2801,37 @@ def _event_signature(ev) -> tuple:
     )
 
 
+def _normalize_formula(formula: str) -> str:
+    """Return a canonical form of a metric formula for equivalence checks.
+
+    Strips whitespace and removes ALL parentheses for the signature. This
+    is aggressive: two formulas with genuinely different parenthesization
+    (and therefore different semantics) will still compare equal here. In
+    practice Intel's cross-generation formula edits either (a) keep the
+    same operator sequence and just add/remove syntactic parens, or (b)
+    change the events themselves (caught by the event-list signature).
+    So dropping parens catches the "cosmetic" case cleanly while still
+    flagging meaningful edits via the event-list difference.
+
+    Example — treated as equal (cosmetic re-parenthesisation):
+      "100 * ( ( a / ( b ) ) * c / ( c + d ) )"
+      "100 * ( a / ( b ) * c / ( c + d ) )"
+
+    Example — still flagged as changed (event set differs):
+      "UNC_M_CAS_COUNT.RD"
+      "UNC_M_CAS_COUNT_SCH0.RD + UNC_M_CAS_COUNT_SCH1.RD"
+    """
+    if not formula:
+        return ""
+    s = "".join(formula.split())
+    s = s.replace("(", "").replace(")", "")
+    return s
+
+
 def _metric_signature(m) -> tuple:
+    """Fingerprint for detecting semantic metric changes across platforms."""
     return (
-        (m.formula or "").strip(),
+        _normalize_formula(m.formula or ""),
         tuple(sorted(e["Name"] for e in m.events)),
         m.level,
     )
@@ -2865,9 +2900,14 @@ def _build_diff(current: PlatformCatalog,
                 metrics_status[name] = "changed"
                 cur_ev = {ev["Name"] for ev in m.events}
                 base_ev = {ev["Name"] for ev in b.events}
+                # Only record the formula diff when the normalized (whitespace-
+                # and paren-agnostic) forms actually differ. This avoids
+                # showing a "formula changed" panel for pure re-parenthesisations.
+                formula_changed = (_normalize_formula(m.formula or "")
+                                   != _normalize_formula(b.formula or ""))
                 metrics_changes[name] = {
-                    "formula_current": expand_formula(m) if m.formula else "",
-                    "formula_baseline": expand_formula(b) if b.formula else "",
+                    "formula_current": expand_formula(m) if (m.formula and formula_changed) else "",
+                    "formula_baseline": expand_formula(b) if (b.formula and formula_changed) else "",
                     "events_added": sorted(cur_ev - base_ev),
                     "events_removed": sorted(base_ev - cur_ev),
                     "level_current": m.level,
