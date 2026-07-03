@@ -2784,12 +2784,11 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
     # Peripheral row heights use the tallest of the three so they line up
     periph_h = max(upi_h, pcie_h, cxl_h)
 
-    # Layout Y coordinates. The gap between the peripherals row and the CHA
-    # hub is proportional to the peripheral height — enough that the ↔ arrows
-    # to/from CHA read as flow rather than a seam. Short peripheral rows use
-    # a min gap of 60 px so the arrows are always long enough to have a
-    # visible shaft (not just an arrowhead butting up against the box).
-    periph_to_hub = max(60, int(periph_h * 1.1))
+    # Layout Y coordinates. All peripheral boxes are bottom-aligned at
+    # row_bottom = y1 + periph_h, so every ↔ arrow starts from the same y
+    # and has the same length (arrow_len ≈ periph_to_hub - 4). A fixed
+    # ~50 px gap gives a readable shaft without wasted vertical space.
+    periph_to_hub = 50
     y1 = margin                          # peripherals row
     y2 = y1 + periph_h + periph_to_hub   # CHA
     y3 = y2 + cha_h + 34                 # MC
@@ -2809,12 +2808,16 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
     ]
     parts.append(_arrow_defs())
 
-    # Peripherals row
-    svg, _, _ = _render_cell(x_upi,  y1, upi,  cols_hint=1, force_width=periph_widths[0])
+    # Peripherals row — bottom-align each box against the row baseline
+    # (y1 + periph_h) so the ↔ arrows into CHA all start from the same
+    # y and end up the same length. Shorter boxes (UPI, CXL) get placed
+    # lower on the canvas so their bottoms line up with PCIe's.
+    row_bottom = y1 + periph_h
+    svg, _, _ = _render_cell(x_upi,  row_bottom - upi_h,  upi,  cols_hint=1, force_width=periph_widths[0])
     parts.append(svg)
-    svg, _, _ = _render_cell(x_pcie, y1, pcie, cols_hint=3, force_width=periph_widths[1])
+    svg, _, _ = _render_cell(x_pcie, row_bottom - pcie_h, pcie, cols_hint=3, force_width=periph_widths[1])
     parts.append(svg)
-    svg, _, _ = _render_cell(x_cxl,  y1, cxl,  cols_hint=1, force_width=periph_widths[2],
+    svg, _, _ = _render_cell(x_cxl,  row_bottom - cxl_h,  cxl,  cols_hint=1, force_width=periph_widths[2],
                              empty=empty_cxl)
     parts.append(svg)
 
@@ -2846,7 +2849,9 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
         f'from core L3/Offcore</text>'
     )
 
-    # Peripherals ↔ CHA (each peripheral drops into the top of CHA at its column center)
+    # Peripherals ↔ CHA. All peripheral boxes are bottom-aligned at
+    # row_bottom, so every arrow starts/ends at the same y — the row of
+    # arrows looks uniform regardless of individual box heights.
     for i, (px, pw) in enumerate([
         (x_upi, periph_widths[0]),
         (x_pcie, periph_widths[1]),
@@ -2855,15 +2860,15 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
         if i == 2 and empty_cxl:
             continue
         p_bottom_cx = px + pw / 2
-        # Down-arrow: peripheral -> CHA (offset by 6 to sit next to opposite-direction one)
+        # Down-arrow: peripheral -> CHA
         parts.append(
-            f'<line x1="{p_bottom_cx - 6}" y1="{y1 + periph_h}" '
+            f'<line x1="{p_bottom_cx - 6}" y1="{row_bottom}" '
             f'x2="{p_bottom_cx - 6}" y2="{y2 - 4}" marker-end="url(#arrow)"/>'
         )
         # Up-arrow: CHA -> peripheral
         parts.append(
             f'<line x1="{p_bottom_cx + 6}" y1="{y2 - 4}" '
-            f'x2="{p_bottom_cx + 6}" y2="{y1 + periph_h}" marker-end="url(#arrow)"/>'
+            f'x2="{p_bottom_cx + 6}" y2="{row_bottom}" marker-end="url(#arrow)"/>'
         )
 
     # CHA ↔ MC — a pair of vertical arrows between the two full-width cells
