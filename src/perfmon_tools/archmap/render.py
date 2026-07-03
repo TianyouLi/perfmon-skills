@@ -987,11 +987,25 @@ PAGE_JS = """
     var m = ARCH.metrics[name];
     if(!m){ pane.innerHTML = '<div class="empty">Unknown metric.</div>'; return; }
     var parts = [];
-    parts.push('<h2>'+escapeHtml(m.name)+' <span class="badge">L'+m.level+'</span></h2>');
+    var st = diffStatusForMetric(m.name);
+    parts.push('<h2>'+escapeHtml(m.name)+' <span class="badge">L'+m.level+'</span>'+statusBadgeHtml(st)+'</h2>');
     var pathBits = [];
     if(m.category) pathBits.push(m.category);
     if(m.parent) pathBits.push(m.parent);
     if(pathBits.length) parts.push('<div class="path">'+escapeHtml(pathBits.join(' › '))+'</div>');
+    // When the metric itself is "changed" but its feeder events are all
+    // unchanged, spell out that the change is in the formula/level, not
+    // the feeders (otherwise it looks like nothing changed).
+    if(compareOn && st === 'changed'){
+      var anyChangedFeeder = m.events.some(function(en){
+        var es = diffStatusForEvent(en);
+        return es === 'changed' || es === 'new';
+      });
+      if(!anyChangedFeeder){
+        parts.push('<div style="font-size:0.75rem;color:var(--muted);margin:0.3rem 0 0.5rem;background:rgba(251,191,36,0.08);border-left:3px solid #fbbf24;padding:0.35rem 0.55rem;border-radius:4px;">'+
+          '<b style="color:#fbbf24;">This metric definition changed</b> — its feeder events are unchanged, but the formula, event list, or level was revised vs the baseline. See <em>Diff vs baseline</em> below.</div>');
+      }
+    }
     parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
     // Detect the "primary" feeder — a pseudo-event whose name pattern matches
     // the metric (e.g. Frontend_Bound ↔ PERF_METRICS.FRONTEND_BOUND). This
@@ -1754,7 +1768,23 @@ PAGE_JS = """
     return parts.join(' ');
   }
 
+  // Collect every TMA-tree metric name (flatten the roots).
+  function tmaAllNodeNames(){
+    var out = [];
+    function walk(node){ out.push(node.name); (node.children||[]).forEach(walk); }
+    (ARCH.tma_roots || []).forEach(walk);
+    return out;
+  }
+
   function renderMetricsSidebar(){
+    // TMA Hierarchy header badge: total in normal mode, +/~/- in compare.
+    var tmaCount = q('#tma-count');
+    if(tmaCount){
+      var names = tmaAllNodeNames();
+      tmaCount.innerHTML = names.length ? metricListBadge(names) : '0';
+      // Hide the badge on platforms with no TMA tree (CWF).
+      tmaCount.style.display = names.length ? '' : 'none';
+    }
     // Bottlenecks
     var bcount = q('#bottleneck-count');
     var blist = q('#bottleneck-list');
@@ -3289,7 +3319,7 @@ def render_page(arch_map: ArchMap,
     </div>
     <div class="view" id="view-metrics">
       <div class="diagram-block tma-block">
-        <h2>TMA Hierarchy<span class="help-tip" tabindex="0">?<span class="tip"><b>Top-down Microarchitecture Analysis</b> — Intel's structured methodology for classifying every pipeline slot. L1 has four buckets (Retiring / Bad-Spec / Frontend-Bound / Backend-Bound) whose fractions sum to 100%. Deeper levels drill into each root: e.g. Backend_Bound → Memory_Bound → DRAM_Bound. Nodes with a ⚑ carry an official <em>bottleneck threshold</em> (e.g. "flagged if &gt; 20%") — use them to decide where to drill next.</span></span></h2>
+        <h2>TMA Hierarchy <span class="badge" id="tma-count">0</span><span class="help-tip" tabindex="0">?<span class="tip"><b>Top-down Microarchitecture Analysis</b> — Intel's structured methodology for classifying every pipeline slot. L1 has four buckets (Retiring / Bad-Spec / Frontend-Bound / Backend-Bound) whose fractions sum to 100%. Deeper levels drill into each root: e.g. Backend_Bound → Memory_Bound → DRAM_Bound. Nodes with a ⚑ carry an official <em>bottleneck threshold</em> (e.g. "flagged if &gt; 20%") — use them to decide where to drill next.</span></span></h2>
         <div class="tree-scroll">{tma_svg}</div>
       </div>
       <details class="subblock" id="bottleneck-block">
