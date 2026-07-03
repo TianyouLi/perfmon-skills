@@ -383,11 +383,6 @@ body.cmp-on ul.metric-list li[data-status="changed"] { border-left: 3px solid #f
 body.cmp-on [data-metric][data-status="new"] > rect.cell-frame { stroke: var(--mapped); }
 body.cmp-on [data-metric][data-status="changed"] > rect.cell-frame { stroke: #fbbf24; }
 
-/* Corner badge injected into uarch boxes during compare mode. */
-.cmp-svg-badge { font-family: ui-monospace, monospace; font-size: 10px; font-weight: 700; pointer-events: none; }
-.cmp-svg-new { fill: var(--mapped); }
-.cmp-svg-chg { fill: #fbbf24; }
-.cmp-svg-rem { fill: var(--unmapped); }
 /* Subtle accent-coloured outline on boxes that have diff activity */
 body.cmp-on [data-path].cmp-box-outline > rect.cell-frame { stroke: var(--accent); }
 
@@ -404,6 +399,41 @@ body.cmp-on [data-path].cmp-box-outline > rect.cell-frame { stroke: var(--accent
 
 /* "Removed since baseline" section in each tab's sidebar */
 .removed-list li { color: var(--muted); text-decoration: line-through; }
+
+/* Field-level diff detail views */
+.diff-table {
+  width: 100%; margin: 0.5rem 0 0.35rem;
+  border-collapse: collapse; font-size: 0.78rem;
+}
+.diff-table th, .diff-table td {
+  padding: 0.3rem 0.55rem; text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.diff-table th {
+  color: var(--muted); font-weight: 500; font-size: 0.7rem;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.diff-table td.diff-old {
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+  text-decoration: line-through;
+}
+.diff-table td.diff-new-cell {
+  color: var(--mapped);
+  font-family: ui-monospace, "SF Mono", Monaco, monospace;
+}
+.diff-label {
+  font-size: 0.7rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin: 0.5rem 0 0.15rem;
+}
+.diff-old-block {
+  border-left: 3px solid var(--unmapped);
+  opacity: 0.85;
+}
+.diff-new-block { border-left: 3px solid var(--mapped); }
+.feeder.diff-new-chip { border-color: var(--mapped); color: var(--mapped); }
+.feeder.diff-rem-chip { border-color: var(--unmapped); color: var(--unmapped); text-decoration: line-through; }
 
 .view { display: none; }
 .view.active { display: block; }
@@ -538,6 +568,20 @@ body.cmp-on [data-path].cmp-box-outline > rect.cell-frame { stroke: var(--accent
 
 text.node-title { fill: var(--ink); font-weight: 600; pointer-events: none; }
 text.node-count { fill: var(--accent); font-weight: 600; pointer-events: none; }
+/* When compare mode is on, the "N events" corner label is replaced by
+   a "+N ~M -K" diff label (injected by JS as text.node-diff). Hiding
+   the count in advance avoids a flash of the wrong value. */
+body.cmp-on text.node-count { display: none; }
+/* Hide the plain "Lx ⚑" TMA label whenever there is a sibling diff label
+   (injected by applyTmaDiffLabels). Nodes with no diff activity keep the
+   plain label. */
+/* Hide the plain "Lx ⚑" label whenever a sibling diff label is present.
+   The diff label ALSO carries class "lvl" so we must exclude it explicitly. */
+body.cmp-on .tma-node:has(> text.node-diff) > text.lvl:not(.node-diff) { display: none; }
+text.node-diff { fill: var(--muted); font-weight: 700; pointer-events: none; }
+text.node-diff .diff-new { fill: var(--mapped); }
+text.node-diff .diff-chg { fill: #fbbf24; }
+text.node-diff .diff-rem { fill: var(--unmapped); }
 
 .group-label { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }
 .flow-label { fill: var(--muted); font-size: 10px; font-style: italic; }
@@ -649,12 +693,13 @@ PAGE_JS = """
       document.body.classList.toggle('cmp-on', compareOn);
       q('#compare-strip').style.display = compareOn ? 'block' : 'none';
       if(compareOn){ renderCompareStrip(); applyStatusToDom(); }
-      else { qa('.cmp-svg-badge').forEach(function(el){ el.remove(); });
+      else { qa('text.node-diff').forEach(function(el){ el.remove(); });
              qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); }); }
       // Repaint lists + removed sections so state matches the toggle.
       renderList();
       renderMetricsSidebar();
       renderTmaTree();
+      applyTmaDiffLabels();
       renderRemovedSections();
     });
   }
@@ -725,58 +770,85 @@ PAGE_JS = """
   }
 
   function applyStatusToDom(){
-    // Inject a small "+N ~M -K" diff badge into every uarch box that has
-    // activity vs the baseline. Uses ARCH.diff.path_rollup keyed by the
-    // node's data-path attribute so nested sub-boxes get their own tally.
+    // For each uarch box, replace its "N events" corner label with a
+    // "+N ~M -K" diff label (injected as text.node-diff at the same
+    // position). The count itself is hidden via CSS while body.cmp-on.
     if(!ARCH.diff || !ARCH.diff.path_rollup) return;
     var rollup = ARCH.diff.path_rollup;
-    // Strip any prior badges before recomputing (idempotent).
-    qa('.cmp-svg-badge').forEach(function(el){ el.remove(); });
+    // Idempotent — strip prior arch-map injections only (leave TMA-tree
+    // labels alone; those are managed by applyTmaDiffLabels).
+    qa('[data-path] > text.node-diff').forEach(function(el){ el.remove(); });
     qa('.cmp-box-outline').forEach(function(el){ el.classList.remove('cmp-box-outline'); });
+
+    var NS = 'http://www.w3.org/2000/svg';
     qa('[data-path]').forEach(function(g){
       var p = g.getAttribute('data-path');
       var r = rollup[p];
       if(!r) return;
       var activity = (r["new"]||0) + (r["changed"]||0) + (r["removed"]||0);
       if(activity === 0) return;
-      // Determine the box's rect so we can anchor the badge to its top-right.
-      var rect = g.querySelector(':scope > rect.cell-frame');
-      if(!rect) return;
-      var rx = parseFloat(rect.getAttribute('x'));
-      var ry = parseFloat(rect.getAttribute('y'));
-      var rw = parseFloat(rect.getAttribute('width'));
-      var rh = parseFloat(rect.getAttribute('height'));
-      // Build "+N ~M -K" text (omit zero components).
+      var count = g.querySelector(':scope > text.node-count');
+      if(!count) return;
       var bits = [];
-      if(r["new"] > 0)     bits.push({t: '+' + r["new"],     cls: 'new'});
-      if(r["changed"] > 0) bits.push({t: '~' + r["changed"], cls: 'chg'});
-      if(r["removed"] > 0) bits.push({t: '-' + r["removed"], cls: 'rem'});
+      if(r["new"] > 0)     bits.push({t: '+' + r["new"],     cls: 'diff-new'});
+      if(r["changed"] > 0) bits.push({t: '~' + r["changed"], cls: 'diff-chg'});
+      if(r["removed"] > 0) bits.push({t: '-' + r["removed"], cls: 'diff-rem'});
       if(!bits.length) return;
-      // Anchor to the top-right of the box, one line below the "N events"
-      // label (which sits at y=ry+font+4). Font sizes shrink at deeper
-      // depths so the offset picks the safer larger value.
-      var NS = 'http://www.w3.org/2000/svg';
       var badge = document.createElementNS(NS, 'text');
-      badge.setAttribute('class', 'cmp-svg-badge');
-      badge.setAttribute('x', rx + rw - 4);
-      // Depth is exposed as data-depth by _render_node. Depth 1/2 use a
-      // ~24px title band; deeper have ~22px.
-      var d = parseInt(g.getAttribute('data-depth') || '1', 10);
-      var yOff = (d <= 1) ? 26 : (d === 2 ? 22 : 20);
-      badge.setAttribute('y', ry + yOff);
+      badge.setAttribute('class', 'node-diff');
+      badge.setAttribute('x', count.getAttribute('x'));
+      badge.setAttribute('y', count.getAttribute('y'));
       badge.setAttribute('text-anchor', 'end');
-      // Right-most first, then reverse-append so order in DOM matches read
-      // order left→right.
+      // Same font as the count so the swap is visually stable.
+      badge.setAttribute('style', count.getAttribute('style') || '');
       bits.forEach(function(b, i){
         var t = document.createElementNS(NS, 'tspan');
-        t.setAttribute('class', 'cmp-svg-' + b.cls);
+        t.setAttribute('class', b.cls);
         if(i > 0) t.setAttribute('dx', '4');
         t.textContent = b.t;
         badge.appendChild(t);
       });
       g.appendChild(badge);
-      // Also outline the box subtly so scanning is quick.
       g.classList.add('cmp-box-outline');
+    });
+  }
+
+  function applyTmaDiffLabels(){
+    // Post-render decoration for TMA tree nodes: inject a <text class="node-diff">
+    // sibling for every node whose subtree rollup has activity. CSS hides the
+    // sibling <text class="lvl"> when body.cmp-on. We do this after render
+    // (DOM manipulation, not string concat) to avoid an HTML-parser artifact
+    // where tspans inside an initially-parsed <text> can be dropped.
+    qa('#tma-svg-container text.node-diff').forEach(function(el){ el.remove(); });
+    if(!compareOn) return;
+    if(!ARCH.diff || !ARCH.diff.tma_rollup) return;
+    var NS = 'http://www.w3.org/2000/svg';
+    var rollup = ARCH.diff.tma_rollup;
+    qa('#tma-svg-container [data-metric]').forEach(function(g){
+      var name = g.getAttribute('data-metric');
+      var r = rollup[name];
+      if(!r) return;
+      var activity = (r["new"]||0) + (r["changed"]||0) + (r["removed"]||0);
+      if(activity === 0) return;
+      var lvl = g.querySelector(':scope > text.lvl');
+      if(!lvl) return;
+      var text = document.createElementNS(NS, 'text');
+      text.setAttribute('class', 'lvl node-diff');
+      text.setAttribute('x', lvl.getAttribute('x'));
+      text.setAttribute('y', lvl.getAttribute('y'));
+      text.setAttribute('text-anchor', 'middle');
+      var bits = [];
+      if(r["new"] > 0)     bits.push({t: '+' + r["new"],     cls: 'diff-new'});
+      if(r["changed"] > 0) bits.push({t: '~' + r["changed"], cls: 'diff-chg'});
+      if(r["removed"] > 0) bits.push({t: '-' + r["removed"], cls: 'diff-rem'});
+      bits.forEach(function(b, i){
+        var ts = document.createElementNS(NS, 'tspan');
+        ts.setAttribute('class', b.cls);
+        if(i > 0) ts.setAttribute('dx', '4');
+        ts.textContent = b.t;
+        text.appendChild(ts);
+      });
+      g.appendChild(text);
     });
   }
 
@@ -1178,7 +1250,22 @@ PAGE_JS = """
       if(evStatus === 'new'){
         parts.push('<div class="note">New in this platform — this event does not exist in the predecessor.</div>');
       } else if(evStatus === 'changed'){
-        parts.push('<div class="note">Encoding differs from the predecessor (EventCode / UMask / Counter). See <code>perfmon-skills compare</code> for a field-level diff.</div>');
+        var fields = (ARCH.diff.events_changes || {})[ev.name] || {};
+        var keys = Object.keys(fields);
+        if(keys.length){
+          parts.push('<table class="diff-table"><thead><tr><th>Field</th><th>' +
+            escapeHtml(ARCH.diff.baseline) + '</th><th>' +
+            escapeHtml(ARCH.diff.baseline ? 'now' : '') + '</th></tr></thead><tbody>');
+          keys.forEach(function(k){
+            var lo = fields[k][0], hi = fields[k][1];
+            parts.push('<tr><td>'+escapeHtml(k)+'</td>'+
+              '<td class="diff-old">'+escapeHtml(lo || '—')+'</td>'+
+              '<td class="diff-new-cell">'+escapeHtml(hi || '—')+'</td></tr>');
+          });
+          parts.push('</tbody></table>');
+        } else {
+          parts.push('<div class="note">Encoding differs from the predecessor.</div>');
+        }
       }
       parts.push('</div>');
     }
@@ -1256,7 +1343,36 @@ PAGE_JS = """
       if(mStatus === 'new'){
         parts.push('<div class="note">New metric on this platform — the predecessor did not define it.</div>');
       } else if(mStatus === 'changed'){
-        parts.push('<div class="note">Formula, feeder events, or level differs from the predecessor. See <code>perfmon-skills compare --type metrics</code> for a full field diff.</div>');
+        var info = (ARCH.diff.metrics_changes || {})[m.name];
+        if(info){
+          if(info.formula_baseline !== info.formula_current){
+            parts.push('<div class="diff-label">Baseline formula:</div>');
+            parts.push('<div class="formula diff-old-block">'+escapeHtml(info.formula_baseline || '(none)')+'</div>');
+            parts.push('<div class="diff-label">Current formula:</div>');
+            parts.push('<div class="formula diff-new-block">'+escapeHtml(info.formula_current || '(none)')+'</div>');
+          }
+          if(info.events_added && info.events_added.length){
+            parts.push('<div class="diff-label">Feeder events added:</div>');
+            parts.push('<div class="feeders">');
+            info.events_added.forEach(function(en){
+              parts.push('<span class="feeder diff-new-chip">+ '+escapeHtml(en)+'</span>');
+            });
+            parts.push('</div>');
+          }
+          if(info.events_removed && info.events_removed.length){
+            parts.push('<div class="diff-label">Feeder events removed:</div>');
+            parts.push('<div class="feeders">');
+            info.events_removed.forEach(function(en){
+              parts.push('<span class="feeder diff-rem-chip">− '+escapeHtml(en)+'</span>');
+            });
+            parts.push('</div>');
+          }
+          if(info.level_current !== info.level_baseline){
+            parts.push('<div class="diff-label">TMA level changed: L'+info.level_baseline+' → L'+info.level_current+'</div>');
+          }
+        } else {
+          parts.push('<div class="note">Formula, feeder events, or level differs from the predecessor.</div>');
+        }
       }
       parts.push('</div>');
     }
@@ -1489,7 +1605,8 @@ PAGE_JS = """
     parts.push('<g class="tma-connectors">');
     allRows.forEach(function(r){
       var node = r.node;
-      if(!node.children || tmaIsCollapsed(node.name)) return;
+      // No connector for leaves (children empty) or collapsed nodes.
+      if(!node.children || !node.children.length || tmaIsCollapsed(node.name)) return;
       var pcx = r.cx;
       var pbot = r.y + TMA_CFG.NODE_H;
       var busY = r.y + TMA_CFG.NODE_H + (TMA_CFG.ROW_H - TMA_CFG.NODE_H) / 2;
@@ -1525,6 +1642,11 @@ PAGE_JS = """
       parts.push('<g class="'+cls.join(' ')+'" data-metric="'+tmaEscape(node.name)+'"'+statusAttr(st)+'>');
       parts.push('<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+TMA_CFG.NODE_H+'" rx="4"/>');
       parts.push('<text class="title" x="'+r.cx+'" y="'+(y + 14)+'" text-anchor="middle">'+tmaEscape(label)+'</text>');
+      // Always emit the "Lx ⚑" label; when compare mode is on, applyTmaDiffLabels()
+      // will inject a sibling <text class="node-diff"> at the same coords and
+      // CSS (body.cmp-on text.lvl) will hide the level label. Doing this via
+      // DOM manipulation post-render avoids an HTML-parser quirk where tspans
+      // inside an initially-parsed <text> can get dropped.
       parts.push('<text class="lvl" x="'+r.cx+'" y="'+(y + 24)+'" text-anchor="middle">'+tmaEscape(lvlBits)+'</text>');
       parts.push('<title>'+tmaEscape(node.name)+'</title>');
       if(isInternal){
@@ -1548,9 +1670,8 @@ PAGE_JS = """
       var el = q('[data-metric="'+cssEsc(state.metrics.metric)+'"]');
       if(el) el.classList.add('selected');
     }
-    // TMA nodes don't get path-based diff badges — the diff hooks in via
-    // per-node data-status (already handled during node emission). So no
-    // applyStatusToDom() call needed here.
+    // Overlay subtree-rollup diff labels in place of the "Lx ⚑" label.
+    applyTmaDiffLabels();
   }
 
   function wireTmaClicks(){
@@ -1611,12 +1732,34 @@ PAGE_JS = """
     return found;
   }
 
+  // Compute a total-badge value for a list of metric names. In compare
+  // mode, returns coloured HTML "+N ~M -K"; otherwise the raw count.
+  function metricListBadge(names){
+    if(!compareOn || !ARCH.diff || !ARCH.diff.metrics_diff_available){
+      return String(names.length);
+    }
+    var n = 0, c = 0, x = 0;
+    names.forEach(function(name){
+      var st = diffStatusForMetric(name);
+      if(st === 'new') n++;
+      else if(st === 'changed') c++;
+    });
+    // Removed metrics show up separately in their own sidebar block
+    // (handled by renderRemovedSections). Skip counting them here.
+    if(n === 0 && c === 0 && x === 0) return String(names.length);
+    var parts = [];
+    if(n > 0) parts.push('<span class="diff-new">+' + n + '</span>');
+    if(c > 0) parts.push('<span class="diff-chg">~' + c + '</span>');
+    if(x > 0) parts.push('<span class="diff-rem">-' + x + '</span>');
+    return parts.join(' ');
+  }
+
   function renderMetricsSidebar(){
     // Bottlenecks
     var bcount = q('#bottleneck-count');
     var blist = q('#bottleneck-list');
     if(ARCH.bottlenecks && ARCH.bottlenecks.length){
-      bcount.textContent = ARCH.bottlenecks.length;
+      bcount.innerHTML = metricListBadge(ARCH.bottlenecks);
       blist.innerHTML = ARCH.bottlenecks.map(function(name){
         var st = diffStatusForMetric(name);
         return '<li data-metric="'+escapeHtml(name)+'"'+statusAttr(st)+'>'+escapeHtml(name)+statusBadgeHtml(st)+'</li>';
@@ -1632,10 +1775,12 @@ PAGE_JS = """
     var infoNames = Object.keys(infoGroups);
     if(infoNames.length){
       var total = 0;
+      var allNames = [];
       var parts = [];
       infoNames.sort().forEach(function(g){
         var items = infoGroups[g];
         total += items.length;
+        allNames = allNames.concat(items);
         parts.push('<div class="group-title">'+escapeHtml(g)+' ('+items.length+')</div>');
         parts.push('<ul class="metric-list">');
         items.forEach(function(name){
@@ -1644,7 +1789,7 @@ PAGE_JS = """
         });
         parts.push('</ul>');
       });
-      iCount.textContent = total;
+      iCount.innerHTML = metricListBadge(allNames);
       iContainer.innerHTML = parts.join('');
     } else {
       iBlock.style.display = 'none';
@@ -1657,10 +1802,12 @@ PAGE_JS = """
     var nKeys = Object.keys(nonTma);
     if(nKeys.length){
       var nTotal = 0;
+      var nAllNames = [];
       var nParts = [];
       nKeys.sort().forEach(function(g){
         var items = nonTma[g];
         nTotal += items.length;
+        nAllNames = nAllNames.concat(items);
         nParts.push('<div class="group-title">'+escapeHtml(g || 'Uncategorized')+' ('+items.length+')</div>');
         nParts.push('<ul class="metric-list">');
         items.forEach(function(name){
@@ -1669,7 +1816,7 @@ PAGE_JS = """
         });
         nParts.push('</ul>');
       });
-      nCount.textContent = nTotal;
+      nCount.innerHTML = metricListBadge(nAllNames);
       nContainer.innerHTML = nParts.join('');
     } else {
       nBlock.style.display = 'none';
@@ -2649,6 +2796,8 @@ def _build_diff(current: PlatformCatalog,
     events_removed = []    # names that exist in baseline but not current
     metrics_removed = []
 
+    events_changes = {}   # name -> {field: [old, new], ...} for status == "changed"
+    metrics_changes = {}  # name -> {formula: [old, new], events_added: [...], events_removed: [...]}
     cur_events = {e.name: e for e in current.events if not e.deprecated}
     base_events = {e.name: e for e in baseline.events if not e.deprecated}
     for name, e in cur_events.items():
@@ -2657,6 +2806,19 @@ def _build_diff(current: PlatformCatalog,
             events_status[name] = "new"
         elif _event_signature(e) != _event_signature(b):
             events_status[name] = "changed"
+            fields = {}
+            if (e.event_code or "") != (b.event_code or ""):
+                fields["event_code"] = [b.event_code or "", e.event_code or ""]
+            if (e.umask or "") != (b.umask or ""):
+                fields["umask"] = [b.umask or "", e.umask or ""]
+            cur_ext = (e.raw.get("UMaskExt") or "") if e.raw else ""
+            base_ext = (b.raw.get("UMaskExt") or "") if b.raw else ""
+            if cur_ext != base_ext:
+                fields["umask_ext"] = [base_ext, cur_ext]
+            if (e.counter or "") != (b.counter or ""):
+                fields["counter"] = [b.counter or "", e.counter or ""]
+            if fields:
+                events_changes[name] = fields
         else:
             events_status[name] = "same"
     for name in sorted(set(base_events) - set(cur_events)):
@@ -2671,6 +2833,16 @@ def _build_diff(current: PlatformCatalog,
                 metrics_status[name] = "new"
             elif _metric_signature(m) != _metric_signature(b):
                 metrics_status[name] = "changed"
+                cur_ev = {ev["Name"] for ev in m.events}
+                base_ev = {ev["Name"] for ev in b.events}
+                metrics_changes[name] = {
+                    "formula_current": expand_formula(m) if m.formula else "",
+                    "formula_baseline": expand_formula(b) if b.formula else "",
+                    "events_added": sorted(cur_ev - base_ev),
+                    "events_removed": sorted(base_ev - cur_ev),
+                    "level_current": m.level,
+                    "level_baseline": b.level,
+                }
             else:
                 metrics_status[name] = "same"
         for name in sorted(set(base_metrics) - set(cur_metrics)):
@@ -2804,6 +2976,27 @@ def _build_diff(current: PlatformCatalog,
         if "/" not in key:
             cell_rollup[key] = counts_dict
 
+    # -------- TMA subtree rollup --------
+    # For each TMA node (metric with hierarchy), aggregate its own status
+    # AND every descendant's. Used to show "+N ~M" on internal tree nodes
+    # so users can see where the change concentration is without expanding.
+    tma_rollup = {}   # metric name -> {new, changed, same, removed}
+    if not skip_metrics:
+        tree = TmaTree(current)
+        def _rollup_node(node):
+            agg = {"new": 0, "changed": 0, "same": 0, "removed": 0}
+            own = metrics_status.get(node.metric.name)
+            if own:
+                agg[own] += 1
+            for c in node.children:
+                child_agg = _rollup_node(c)
+                for k in agg:
+                    agg[k] += child_agg[k]
+            tma_rollup[node.metric.name] = agg
+            return agg
+        for root in tree.roots:
+            _rollup_node(root)
+
     counts = {
         "events": {
             # Post-reclassification counts — these match what the UI highlights.
@@ -2839,6 +3032,9 @@ def _build_diff(current: PlatformCatalog,
         "counts": counts,
         "cell_rollup": cell_rollup,
         "path_rollup": path_rollup,
+        "tma_rollup": tma_rollup,
+        "events_changes": events_changes,
+        "metrics_changes": metrics_changes,
     }
 
 

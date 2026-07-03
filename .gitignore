@@ -9,3 +9,7 @@ sessions/
 # Generated arch-map diagrams (regenerated via `perfmon-skills arch-map`)
 gnr.html
 cwf.html
+dmr.html
+
+# Local Pages preview built by the workflow / scripts/build_index.py
+_site/
