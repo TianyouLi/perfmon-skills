@@ -28,12 +28,20 @@ PLATFORMS = [
         "name": "Clearwater Forest",
         "tagline": "E-core server. Category-grouped metrics (no TMA hierarchy).",
     },
+    {
+        "file": "dmr.html",
+        "short": "DMR",
+        "name": "Diamond Rapids",
+        "tagline": "P-core server. Successor to Granite Rapids.",
+        "stub": True,
+    },
 ]
 
 
 def _extract_counts(html_path: Path) -> dict:
     """Best-effort parse of the ARCH payload embedded in a generated HTML.
-    Returns {'events': int, 'metrics': int} — or empty if parsing fails."""
+    Returns {'events': int, 'metrics': int} — or empty if parsing fails
+    (e.g. the file is a stub / placeholder without an ARCH payload)."""
     try:
         text = html_path.read_text()
     except OSError:
@@ -49,6 +57,17 @@ def _extract_counts(html_path: Path) -> dict:
         "events": len(payload.get("events", {})),
         "metrics": len(payload.get("metrics", {})),
     }
+
+
+def _is_stub_output(html_path: Path) -> bool:
+    """Heuristic: a stub page written by build_stub.py has no ARCH payload
+    and contains our 'awaiting Intel data' status. Real arch-map pages have
+    a several-hundred-KB ARCH payload."""
+    try:
+        text = html_path.read_text()
+    except OSError:
+        return False
+    return "const ARCH =" not in text
 
 
 INDEX_CSS = """
@@ -94,6 +113,15 @@ h1 { font-size: 1.75rem; margin: 0 0 0.5rem; }
   display: flex; gap: 1.25rem; font-size: 0.82rem; color: var(--muted);
 }
 .tile .stats b { color: var(--ink); margin-right: 0.3rem; }
+.tile.stub { border-style: dashed; }
+.tile.stub h2 { color: var(--muted); }
+.tile .stub-status {
+  display: inline-block;
+  padding: 0.15rem 0.55rem; border-radius: 12px;
+  background: rgba(251, 191, 36, 0.15); color: #fbbf24;
+  font-size: 0.7rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
 .about {
   margin-top: 2.5rem; padding-top: 1.5rem;
   border-top: 1px solid var(--border);
@@ -106,16 +134,21 @@ h1 { font-size: 1.75rem; margin: 0 0 0.5rem; }
 
 
 def _tile_html(p: dict, counts: dict) -> str:
-    parts = [f'<a class="tile" href="{p["file"]}">']
+    stub = bool(p.get("stub"))
+    cls = "tile stub" if stub else "tile"
+    parts = [f'<a class="{cls}" href="{p["file"]}">']
     parts.append(f'<h2>{p["name"]} <span class="short">{p["short"]}</span></h2>')
     parts.append(f'<div class="tagline">{p["tagline"]}</div>')
-    stats_bits = []
-    if counts.get("events") is not None:
-        stats_bits.append(f'<div><b>{counts["events"]:,}</b>events</div>')
-    if counts.get("metrics") is not None:
-        stats_bits.append(f'<div><b>{counts["metrics"]}</b>metrics</div>')
-    if stats_bits:
-        parts.append('<div class="stats">' + "".join(stats_bits) + "</div>")
+    if stub:
+        parts.append('<div class="stub-status">awaiting Intel data</div>')
+    else:
+        stats_bits = []
+        if counts.get("events") is not None:
+            stats_bits.append(f'<div><b>{counts["events"]:,}</b>events</div>')
+        if counts.get("metrics") is not None:
+            stats_bits.append(f'<div><b>{counts["metrics"]}</b>metrics</div>')
+        if stats_bits:
+            parts.append('<div class="stats">' + "".join(stats_bits) + "</div>")
     parts.append("</a>")
     return "\n".join(parts)
 
@@ -123,7 +156,13 @@ def _tile_html(p: dict, counts: dict) -> str:
 def build(out_dir: Path) -> None:
     tiles = []
     for p in PLATFORMS:
-        counts = _extract_counts(out_dir / p["file"])
+        html_path = out_dir / p["file"]
+        # If the marked-as-stub platform now has a real arch-map (Intel
+        # published data upstream and the workflow picked it up), flip the
+        # stub flag off automatically.
+        if p.get("stub") and html_path.exists() and not _is_stub_output(html_path):
+            p = dict(p, stub=False)
+        counts = {} if p.get("stub") else _extract_counts(html_path)
         tiles.append(_tile_html(p, counts))
 
     html = f"""<!doctype html>

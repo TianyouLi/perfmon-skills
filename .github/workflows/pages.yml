@@ -37,6 +37,16 @@ jobs:
           perfmon-skills arch-map --platform GNR --out _site/gnr.html
           perfmon-skills arch-map --platform CWF --out _site/cwf.html
 
+      - name: Render DMR (real page if data exists, stub otherwise)
+        run: |
+          if grep -q ',DMR,\|/DMR/' perfmon/mapfile.csv 2>/dev/null; then
+            echo "DMR event data found upstream — rendering real arch-map"
+            perfmon-skills arch-map --platform DMR --out _site/dmr.html
+          else
+            echo "DMR event data not yet published — writing stub page"
+            python scripts/build_stub.py DMR _site/dmr.html
+          fi
+
       - name: Generate landing index.html
         run: python scripts/build_index.py _site
 
