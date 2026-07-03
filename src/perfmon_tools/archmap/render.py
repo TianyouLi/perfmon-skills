@@ -1383,48 +1383,89 @@ def _by_id(cells: list) -> dict:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# TMA tree renderer — horizontal indented tree
+# TMA tree renderer — top-down family-tree layout
 #
-# Each node = one row, with an indent that scales with its depth. Rows are
-# stacked vertically top-to-bottom in a pre-order traversal so children appear
-# immediately after their parent. Elbow connectors are drawn from each parent
-# to its first & last child.
+# L1 roots at the top. Each node's children fan out horizontally below it.
+# Layout pass:
+#   1. Bottom-up: compute the horizontal footprint of each subtree so leaves
+#      never overlap. Internal nodes get max(own_width, sum(children_widths)).
+#   2. Top-down: assign each node an x centred over its subtree.
+#   3. y is determined by depth × row spacing.
+# Elbow connectors go straight down from parent bottom, then horizontally,
+# then down into child top.
 # ---------------------------------------------------------------------------
 
-TMA_ROW_H = 28
-TMA_INDENT = 26
-TMA_NODE_W = 260
-TMA_ROW_GAP = 3
-TMA_LEFT_PAD = 20
+TMA_LEAF_W = 118          # each leaf occupies at least this much horizontal space
+TMA_LEAF_GAP = 8          # min gap between sibling subtrees
+TMA_NODE_H = 28           # box height
+TMA_ROW_H = 62            # vertical distance from row N to row N+1
+TMA_ROOT_GAP = 40         # extra gap between L1 subtrees
 TMA_TOP_PAD = 24
+TMA_LEFT_PAD = 24
+TMA_BOTTOM_PAD = 24
 
 
-def _tma_walk_layout(node, depth, cursor) -> list:
-    """Pre-order traversal that assigns (x, y) to each node and returns a
-    flat list of dicts describing the row layout.
-
-    cursor is a mutable dict {'y': int} so nested calls share the row counter.
+def _tma_layout_subtree(node, depth, cursor_x, rows):
+    """Recursively lay out a subtree starting at cursor_x. Returns the total
+    horizontal width consumed by this subtree. Appends layout dicts to `rows`.
     """
-    rows = [{
+    if not node.children:
+        # Leaf: fixed width
+        w = TMA_LEAF_W
+        rows.append({
+            "node": node,
+            "depth": depth,
+            "cx": cursor_x + w / 2,
+            "y": TMA_TOP_PAD + depth * TMA_ROW_H,
+        })
+        return w
+
+    # Layout children first, side by side
+    child_start = cursor_x
+    child_center_xs = []
+    for i, c in enumerate(node.children):
+        if i > 0:
+            child_start += TMA_LEAF_GAP
+        child_w = _tma_layout_subtree(c, depth + 1, child_start, rows)
+        child_center_xs.append(child_start + child_w / 2)
+        child_start += child_w
+
+    subtree_w = child_start - cursor_x
+    # Parent width — must accommodate its own box (TMA_LEAF_W) even if kids are
+    # narrower.
+    if subtree_w < TMA_LEAF_W:
+        # Center the narrow subtree under the parent. We've appended all
+        # descendants to `rows` but not the parent itself yet, so the shift
+        # applies to (subtree_size - 1) trailing rows.
+        shift = (TMA_LEAF_W - subtree_w) / 2
+        descendants = _count_subtree(node) - 1
+        for r in rows[-descendants:]:
+            r["cx"] += shift
+        for k in range(len(child_center_xs)):
+            child_center_xs[k] += shift
+        subtree_w = TMA_LEAF_W
+
+    parent_cx = (child_center_xs[0] + child_center_xs[-1]) / 2
+    rows.append({
         "node": node,
         "depth": depth,
-        "x": TMA_LEFT_PAD + depth * TMA_INDENT,
-        "y": cursor["y"],
-    }]
-    cursor["y"] += TMA_ROW_H + TMA_ROW_GAP
-    child_row_indexes = []
+        "cx": parent_cx,
+        "y": TMA_TOP_PAD + depth * TMA_ROW_H,
+    })
+    return subtree_w
+
+
+def _count_subtree(node):
+    n = 1
     for c in node.children:
-        child_start = len(rows)
-        rows.extend(_tma_walk_layout(c, depth + 1, cursor))
-        child_row_indexes.append((child_start, len(rows) - 1))
-    rows[0]["_child_ranges"] = child_row_indexes
-    return rows
+        n += _count_subtree(c)
+    return n
 
 
 def render_tma_svg(tree: TmaTree, target_width: int) -> str:
-    """Render the TMA tree as a horizontal indented tree."""
+    """Render the TMA tree as a top-down family tree."""
     if not tree.roots:
-        # Placeholder — CWF-style platforms with no TMA hierarchy.
+        # Placeholder — platforms with no TMA hierarchy (e.g. CWF).
         return (
             f'<svg viewBox="0 0 {target_width} 60" width="{target_width}" '
             f'height="60" role="img">'
@@ -1433,13 +1474,17 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
             f'</svg>'
         )
 
-    cursor = {"y": TMA_TOP_PAD}
-    all_rows = []
-    for root in tree.roots:
-        all_rows.extend(_tma_walk_layout(root, 0, cursor))
+    rows = []
+    cursor_x = TMA_LEFT_PAD
+    for i, root in enumerate(tree.roots):
+        if i > 0:
+            cursor_x += TMA_ROOT_GAP
+        w = _tma_layout_subtree(root, 0, cursor_x, rows)
+        cursor_x += w
 
-    canvas_h = cursor["y"] + TMA_TOP_PAD
-    canvas_w = target_width
+    max_depth = max(r["depth"] for r in rows)
+    canvas_w = max(target_width, int(cursor_x + TMA_LEFT_PAD))
+    canvas_h = TMA_TOP_PAD + (max_depth + 1) * TMA_ROW_H + TMA_BOTTOM_PAD
 
     parts = [
         f'<svg viewBox="0 0 {canvas_w} {canvas_h}" width="{canvas_w}" '
@@ -1449,58 +1494,70 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
                  '.tma-node rect { fill: var(--box); stroke: var(--border); stroke-width: 1; }'
                  '.tma-node:hover rect { fill: var(--box-hover); stroke: var(--accent); cursor: pointer; }'
                  '.tma-node.selected rect { fill: rgba(56,189,248,0.25); stroke: var(--accent); stroke-width: 2; }'
-                 '.tma-node text.title { fill: var(--ink); font-size: 12px; font-weight: 500; pointer-events: none; }'
-                 '.tma-node text.lvl { fill: var(--accent); font-size: 10px; font-weight: 600; pointer-events: none; }'
-                 '.tma-node text.leaf { fill: var(--muted); font-size: 9px; pointer-events: none; }'
-                 '.tma-node.has-thr rect { stroke-dasharray: none; }'
+                 '.tma-node text.title { fill: var(--ink); font-size: 11px; font-weight: 500; pointer-events: none; }'
+                 '.tma-node text.lvl { fill: var(--accent); font-size: 9px; font-weight: 600; pointer-events: none; }'
+                 '.tma-node.has-thr rect { stroke: var(--accent); }'
                  '.tma-connector { stroke: var(--border); stroke-width: 1; fill: none; }'
                  '.tma-empty { fill: var(--muted); font-size: 13px; font-style: italic; }'
                  '</style>')
 
-    # Draw elbow connectors first (behind the boxes)
+    # Index rows by node identity for connector lookup.
+    row_by_id = {id(r["node"]): r for r in rows}
+
+    # Elbows first, behind the boxes.
     parts.append('<g class="tma-connectors">')
-    for row in all_rows:
-        node = row["node"]
+    for r in rows:
+        node = r["node"]
         if not node.children:
             continue
-        parent_x = row["x"]
-        parent_y = row["y"]
-        # Find each direct-child row (they are direct children in the tree,
-        # matched by node identity)
-        for c in node.children:
-            child_row = next(r for r in all_rows if r["node"] is c)
-            cx = child_row["x"]
-            cy = child_row["y"]
-            # Elbow: down from parent's left edge, then right into child
-            px = parent_x + 8  # vertical stem below parent's left indent
+        parent_cx = r["cx"]
+        parent_bottom = r["y"] + TMA_NODE_H
+        # A single horizontal bus at the midpoint between the parent row and
+        # the child row makes the tree readable even when many siblings share
+        # a parent.
+        bus_y = r["y"] + TMA_NODE_H + (TMA_ROW_H - TMA_NODE_H) / 2
+        # Vertical stem down from parent to bus
+        parts.append(
+            f'<path class="tma-connector" '
+            f'd="M {parent_cx} {parent_bottom} L {parent_cx} {bus_y}"/>'
+        )
+        # Horizontal bus spanning first→last child (if >1 kid)
+        child_cxs = [row_by_id[id(c)]["cx"] for c in node.children]
+        if len(child_cxs) > 1:
             parts.append(
                 f'<path class="tma-connector" '
-                f'd="M {px} {parent_y + TMA_ROW_H} L {px} {cy + TMA_ROW_H / 2} '
-                f'L {cx} {cy + TMA_ROW_H / 2}"/>'
+                f'd="M {min(child_cxs)} {bus_y} L {max(child_cxs)} {bus_y}"/>'
+            )
+        # Vertical stems from bus down to each child top
+        for cx in child_cxs:
+            child_top = r["y"] + TMA_ROW_H
+            parts.append(
+                f'<path class="tma-connector" '
+                f'd="M {cx} {bus_y} L {cx} {child_top}"/>'
             )
     parts.append('</g>')
 
-    # Draw the node rows
-    for row in all_rows:
-        node = row["node"]
+    # Node boxes
+    for r in rows:
+        node = r["node"]
         m = node.metric
         has_thr = bool((m.threshold or {}).get("Formula"))
         cls = "tma-node has-thr" if has_thr else "tma-node"
-        x, y = row["x"], row["y"]
-        w = min(TMA_NODE_W, canvas_w - x - 20)
+        w = TMA_LEAF_W
+        x = r["cx"] - w / 2
+        y = r["y"]
+        label = _short(m.name, maxlen=15)
+        lvl_label = f'L{m.level}{" ⚑" if has_thr else ""}'
         parts.append(
             f'<g class="{cls}" data-metric="{html.escape(m.name)}">'
-            f'<rect x="{x}" y="{y}" width="{w}" height="{TMA_ROW_H}" rx="4"/>'
-            f'<text class="title" x="{x + 10}" y="{y + 17}">'
-            f'{html.escape(m.name)}</text>'
-            f'<text class="lvl" x="{x + w - 10}" y="{y + 17}" text-anchor="end">'
-            f'L{m.level}{" ⚑" if has_thr else ""}</text>'
+            f'<rect x="{x}" y="{y}" width="{w}" height="{TMA_NODE_H}" rx="4"/>'
+            f'<text class="title" x="{r["cx"]}" y="{y + 14}" text-anchor="middle">'
+            f'{html.escape(label)}</text>'
+            f'<text class="lvl" x="{r["cx"]}" y="{y + 24}" text-anchor="middle">'
+            f'{lvl_label}</text>'
+            f'<title>{html.escape(m.name)}</title>'
+            f'</g>'
         )
-        if node.is_leaf:
-            parts.append(
-                f'<text class="leaf" x="{x + w + 4}" y="{y + 18}">leaf</text>'
-            )
-        parts.append('</g>')
 
     parts.append('</svg>')
     return "\n".join(parts)
