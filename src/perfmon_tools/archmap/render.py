@@ -658,6 +658,9 @@ text.node-diff .diff-rem { fill: var(--unmapped); }
 .group-label { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; }
 .flow-label { fill: var(--muted); font-size: 10px; font-style: italic; }
 .flow line, .flow path { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+/* "from core L3/Offcore" — thinner + dimmer since it's contextual */
+.flow-external { stroke: var(--muted); stroke-width: 0.8; fill: none; opacity: 0.55; }
+.flow-label-dim { opacity: 0.6; font-size: 9px; }
 .flow.control line, .flow.control path { stroke-dasharray: 4 3; }
 """
 
@@ -2417,6 +2420,9 @@ def _arrow_defs():
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
     </marker>
+    <marker id="arrow-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" opacity="0.55"/>
+    </marker>
   </defs>'''
 
 
@@ -2778,9 +2784,11 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
     # Peripheral row heights use the tallest of the three so they line up
     periph_h = max(upi_h, pcie_h, cxl_h)
 
-    # Layout Y coordinates
+    # Layout Y coordinates. The gap between the peripherals row and the CHA
+    # hub must be big enough that UPI/PCIe/CXL ↔ CHA arrows are visibly long
+    # (short arrows look glued to the box and don't read as "traffic flow").
     y1 = margin              # peripherals row
-    y2 = y1 + periph_h + 40  # CHA
+    y2 = y1 + periph_h + 90  # CHA
     y3 = y2 + cha_h + 34     # MC
     y4 = y3 + mc_h + 40      # Power
     canvas_h = y4 + pw_h + margin
@@ -2822,13 +2830,17 @@ def render_uncore_svg(cells: list, include_cxl: bool = True,
     # -------- Arrows --------
     parts.append('<g class="flow">')
 
-    # From core into CHA (from top of canvas)
+    # From core into CHA (from top of canvas). Rendered thinner/dimmer since
+    # it's a "coming from outside the uncore" hint rather than a real
+    # uncore-internal edge.
     hub_top_cx = x_hub + inner_w / 2
     parts.append(
-        f'<line x1="{hub_top_cx}" y1="0" x2="{hub_top_cx}" y2="{y2 - 4}" marker-end="url(#arrow)"/>'
+        f'<line class="flow-external" x1="{hub_top_cx}" y1="0" '
+        f'x2="{hub_top_cx}" y2="{y2 - 4}" marker-end="url(#arrow-dim)"/>'
     )
     parts.append(
-        f'<text x="{hub_top_cx + 8}" y="18" class="flow-label">from core L3/Offcore</text>'
+        f'<text x="{hub_top_cx + 8}" y="18" class="flow-label flow-label-dim">'
+        f'from core L3/Offcore</text>'
     )
 
     # Peripherals ↔ CHA (each peripheral drops into the top of CHA at its column center)
