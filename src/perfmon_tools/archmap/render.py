@@ -3122,8 +3122,11 @@ def _build_diff(current: PlatformCatalog,
     ev_to_cell = {}
     for cell in list(cur_am.core_cells) + list(cur_am.uncore_cells):
         _leaf_paths(cell, (cell.id,), ev_to_cell)
-    core_cell_ids = [c.id for c in cur_am.core_cells]
-    uncore_cell_ids = [c.id for c in cur_am.uncore_cells]
+    # Exclude the synthetic 'unclassified' bucket — it appears in both
+    # core_cells and uncore_cells (any event we couldn't classify lands
+    # there), so keeping it would double-count in the section badges.
+    core_cell_ids = [c.id for c in cur_am.core_cells if c.id != 'unclassified']
+    uncore_cell_ids = [c.id for c in cur_am.uncore_cells if c.id != 'unclassified']
 
     # Bucket the "removed" events by why they went away — many are just
     # unit renames (M2M → B2CMI on GNR). Users care about *genuine* removals,
