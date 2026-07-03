@@ -68,7 +68,7 @@ jobs:
         continue-on-error: true
 
       - name: Wait before retry
-        if: steps.deployment.outcome == 'failure'
+        if: steps.deployment.outcome != 'success'
         run: sleep 30
 
       - name: Deploy to GitHub Pages (retry)
