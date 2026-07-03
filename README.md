@@ -1,5 +1,9 @@
 # perfmon-skills
 
+[![Deploy arch-map to GitHub Pages](https://github.com/TianyouLi/perfmon-skills/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/TianyouLi/perfmon-skills/actions/workflows/pages.yml)
+[![Live site](https://img.shields.io/website?url=https%3A%2F%2Ftianyouli.github.io%2Fperfmon-skills%2F&label=arch-map%20site&up_message=live&down_message=down)](https://tianyouli.github.io/perfmon-skills/)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+
 Performance analysis toolkit built on [Intel perfmon](https://github.com/intel/perfmon) data. Provides CLI tools and Claude Code slash commands for streamlined performance investigation on Intel platforms.
 
 **Live arch-map browser:** https://tianyouli.github.io/perfmon-skills/ — interactive event and metric explorer for GNR and CWF, rebuilt on every push to `main`.
