@@ -109,11 +109,12 @@ def _load_events_file(path: Path, platform: str, core_type: str) -> list:
     return events
 
 
-def _load_metrics_file(path: Path, platform: str, core_type: str) -> list:
-    """Load a single metric JSON file."""
+def _load_metrics_file(path: Path, platform: str, core_type: str) -> tuple:
+    """Load a single metric JSON file. Returns (metrics_list, header_dict)."""
     with open(path) as f:
         data = json.load(f)
 
+    header = data.get("Header", {}) or {}
     metrics = []
     for raw in data.get("Metrics", []):
         metrics.append(
@@ -138,7 +139,7 @@ def _load_metrics_file(path: Path, platform: str, core_type: str) -> list:
                 core_type=core_type,
             )
         )
-    return metrics
+    return metrics, header
 
 
 class PlatformCatalog:
@@ -155,6 +156,10 @@ class PlatformCatalog:
         self._metrics = []
         self._event_index = {}  # name -> EventDef
         self._metric_index = {}  # name -> MetricDef
+        # Merged metrics-file header (Version / DatePublished / TmaVersion / …)
+        # — used to explain to users whether a platform's Intel metrics JSON
+        # ships a TMA hierarchy or not.
+        self.metrics_header: dict = {}
 
         for core in platform_info.core_types:
             core_type = core.core_type or ""
@@ -165,9 +170,13 @@ class PlatformCatalog:
                     )
             for path in core.metrics_files:
                 if path.exists():
-                    self._metrics.extend(
-                        _load_metrics_file(path, platform_info.shortname, core_type)
+                    metrics, header = _load_metrics_file(
+                        path, platform_info.shortname, core_type
                     )
+                    self._metrics.extend(metrics)
+                    # Keep the header from the first metrics file we find.
+                    if not self.metrics_header and header:
+                        self.metrics_header = header
 
         # Build indexes
         for ev in self._events:

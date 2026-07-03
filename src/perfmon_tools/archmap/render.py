@@ -239,6 +239,7 @@ ul.event-list li.selected { background: var(--selected); color: white; }
 .tma-node.has-thr > rect { stroke: var(--accent); }
 .tma-connector { stroke: var(--border); stroke-width: 1; fill: none; }
 .tma-empty { fill: var(--muted); font-size: 13px; font-style: italic; }
+.tma-empty-sub { fill: var(--muted); font-size: 11px; opacity: 0.75; }
 .tma-root-sep { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }
 
 /* Toggle glyph on internal nodes */
@@ -1718,21 +1719,18 @@ def _by_id(cells: list) -> dict:
 # expand/collapse without a page round-trip. Python only emits a container.
 # ---------------------------------------------------------------------------
 
-def render_tma_svg(tree: TmaTree, target_width: int) -> str:
+def render_tma_svg(tree: TmaTree, target_width: int,
+                   metrics_header: Optional[dict] = None) -> str:
     """Emit a placeholder container. The actual TMA tree is laid out and
     rendered in JavaScript (see PAGE_JS::renderTmaTree) so the user can
     toggle expand/collapse without a round-trip.
 
-    We still emit the empty-platform placeholder here since it never changes.
+    On platforms whose metrics JSON does not (yet) define a TMA tree, we
+    render a data-driven explanation instead — the metrics-file header
+    tells us which version shipped and whether TmaVersion is empty.
     """
     if not tree.roots:
-        return (
-            f'<svg viewBox="0 0 {target_width} 60" width="{target_width}" '
-            f'height="60" role="img">'
-            f'<text x="{target_width // 2}" y="34" class="tma-empty" '
-            f'text-anchor="middle">No TMA hierarchy defined for this platform.</text>'
-            f'</svg>'
-        )
+        return _render_tma_placeholder(target_width, metrics_header)
     # Real trees are rendered by JS at DOMContentLoaded time.
     return (
         '<div class="tma-toolbar">'
@@ -1741,6 +1739,47 @@ def render_tma_svg(tree: TmaTree, target_width: int) -> str:
         '<span class="tma-hint">Click <b>+</b>/<b>−</b> on a node to toggle its subtree.</span>'
         '</div>'
         '<div id="tma-svg-container"></div>'
+    )
+
+
+def _render_tma_placeholder(target_width: int,
+                            metrics_header: Optional[dict]) -> str:
+    """Explain, using the metrics-file header, why this platform has no TMA
+    hierarchy. Falls back to a generic message if the header is unavailable."""
+    header = metrics_header or {}
+    version = header.get("Version") or ""
+    date = header.get("DatePublished") or ""
+    tma_version = (header.get("TmaVersion") or "").strip()
+    tma_flavor = (header.get("TmaFlavor") or "").strip()
+
+    lines = []
+    if tma_version:
+        # Shouldn't reach here (tree.roots would be populated) but handle it.
+        lines.append(f'This platform advertises TMA v{tma_version} '
+                     f'({tma_flavor or "unknown flavor"}) but no tree metrics were parsed.')
+    else:
+        lines.append("Intel has not yet published TMA formulas for this platform.")
+        details = []
+        if version:
+            details.append(f"metrics-file v{version}")
+        if date:
+            details.append(f"published {date}")
+        details.append("TmaVersion field is empty")
+        lines.append(" (" + ", ".join(details) + ")")
+    lines.append("A TMA tree is expected in a future upstream metrics release.")
+
+    text = "".join(lines)
+    # SVG can't wrap text easily; use a foreignObject-like approach with two
+    # tspan lines for a graceful two-line fallback.
+    svg_h = 120
+    return (
+        f'<svg viewBox="0 0 {target_width} {svg_h}" width="{target_width}" '
+        f'height="{svg_h}" role="img">'
+        f'<text x="{target_width // 2}" y="42" class="tma-empty" '
+        f'text-anchor="middle">{html.escape(lines[0] + lines[1] if len(lines) > 1 else lines[0])}</text>'
+        f'<text x="{target_width // 2}" y="74" class="tma-empty-sub" '
+        f'text-anchor="middle">{html.escape(lines[-1])}</text>'
+        f'</svg>'
     )
 
 
@@ -2369,7 +2408,10 @@ def render_page(arch_map: ArchMap,
     tma_svg = ""
     if catalog is not None:
         tree = TmaTree(catalog)
-        tma_svg = render_tma_svg(tree, target_width=canvas_w)
+        tma_svg = render_tma_svg(
+            tree, target_width=canvas_w,
+            metrics_header=getattr(catalog, "metrics_header", None),
+        )
 
     return f'''<!doctype html>
 <html lang="en">
@@ -2438,7 +2480,7 @@ def render_page(arch_map: ArchMap,
         <div id="info-groups"></div>
       </details>
       <details class="subblock" id="nontma-block">
-        <summary>Metrics (no TMA hierarchy) <span class="badge" id="nontma-count">0</span><span class="help-tip" tabindex="0">?<span class="tip">This platform's perfmon JSON does not (yet) define a TMA tree. Instead, metrics are grouped by their <code>Category</code> field (Freq / BW / IO / NUMA / …). Common on newer E-core-only servers where Intel has released event data but not yet the full TMA hierarchy.</span></span></summary>
+        <summary>Metrics (no TMA hierarchy) <span class="badge" id="nontma-count">0</span><span class="help-tip" tabindex="0">?<span class="tip">Intel has not yet published a TMA tree for this platform — the metrics JSON header's <code>TmaVersion</code> field is empty. Only system-level metrics (Freq / BW / IO / NUMA / Latency / …) are defined so far. Common on newly-launched parts: event files typically arrive first, TMA metrics land in a later release. As soon as Intel publishes them, this page will pick them up automatically on the next rebuild.</span></span></summary>
         <div id="nontma-groups"></div>
       </details>
     </div>
