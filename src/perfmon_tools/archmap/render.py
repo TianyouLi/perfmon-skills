@@ -203,6 +203,15 @@ ul.event-list li.selected { background: var(--selected); color: white; }
   text-transform: none; letter-spacing: normal;
   margin-left: 0.5rem; font-style: italic;
 }
+.primary-badge {
+  display: inline-block; margin-left: 0.3rem;
+  background: var(--accent); color: #0f172a;
+  padding: 0.02rem 0.35rem; border-radius: 8px;
+  font-family: inherit; font-size: 0.6rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+.metric-detail .feeder.primary { border-color: var(--accent); }
 
 .detail-section {
   margin-top: 0.9rem;
@@ -420,11 +429,15 @@ text.node-count { fill: var(--accent); font-weight: 600; pointer-events: none; }
 
 PAGE_JS = """
 (function(){
-  // state.tab is 'events' or 'metrics'.
-  // state.path is the uarch path (events tab).
-  // state.metric is the currently-selected metric name.
-  // state.eventName is the currently-selected event.
-  var state = {tab: 'events', path: null, eventName: null, metric: null};
+  // Per-tab left-column selection state, independent so switching tabs
+  // preserves what was highlighted there. detail.kind ('event'|'metric')
+  // determines what the bottom detail pane shows regardless of active tab.
+  var state = {
+    tab: 'events',
+    events: {path: null, eventName: null},   // events-tab selection
+    metrics: {metric: null},                  // metrics-tab selection
+    detail: {kind: null, name: null},         // bottom pane subject
+  };
 
   function q(sel, root){ return (root||document).querySelector(sel); }
   function qa(sel, root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
@@ -455,9 +468,14 @@ PAGE_JS = """
 
   // -------- Tab switching --------
   function setTab(name){
+    var changed = state.tab !== name;
     state.tab = name;
     qa('.tab').forEach(function(el){ el.classList.toggle('active', el.getAttribute('data-tab') === name); });
     qa('.view').forEach(function(el){ el.classList.toggle('active', el.id === 'view-' + name); });
+    if(changed){
+      // Repaint the top-right pane so it reflects the new tab's selection.
+      renderList();
+    }
   }
 
   function wireTabs(){
@@ -468,14 +486,19 @@ PAGE_JS = """
 
   // -------- Events tab: uarch selection --------
   function selectPath(pathStr){
-    state.path = pathStr; state.eventName = null; state.metric = null;
-    qa('.selected').forEach(function(el){ el.classList.remove('selected'); });
+    state.events.path = pathStr;
+    state.events.eventName = null;
+    // Clear only the SVG highlight in the events view (not metrics view).
+    qa('#view-events .selected').forEach(function(el){ el.classList.remove('selected'); });
     var arr = pathStr.split('/');
     for(var i = 1; i <= arr.length; i++){
       var seg = arr.slice(0, i).join('/');
       var el = q('[data-path="'+seg+'"]');
       if(el) el.classList.add('selected');
     }
+    // Selecting a path means the current "thing under inspection" is the
+    // component itself, not any specific event yet — clear detail subject.
+    state.detail.kind = null; state.detail.name = null;
     renderList();
     renderDetail();
   }
@@ -513,32 +536,23 @@ PAGE_JS = """
   }
 
   function renderList(){
+    // The top-right pane reflects whichever tab is currently active.
     var pane = q('#pane-list');
-    if(state.metric){
-      // A metric was picked — show its feeder events as the list
-      var m = ARCH.metrics[state.metric];
-      if(!m){ pane.innerHTML = '<div class="empty">Unknown metric.</div>'; return; }
-      var parts = [];
-      parts.push('<h2>'+escapeHtml(m.name)+' <span class="badge">L'+m.level+'</span></h2>');
-      var pathBits = [];
-      if(m.category) pathBits.push(m.category);
-      if(m.parent) pathBits.push(m.parent);
-      if(pathBits.length) parts.push('<div class="path">'+escapeHtml(pathBits.join(' › '))+'</div>');
-      parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
-      parts.push('<ul class="event-list">');
-      m.events.forEach(function(name){
-        parts.push('<li data-ev="'+encodeURIComponent(name)+'">'+escapeHtml(name)+'</li>');
-      });
-      parts.push('</ul>');
-      pane.innerHTML = parts.join('');
-      wireEventListItems();
+    if(state.tab === 'metrics'){
+      var name = state.metrics.metric;
+      if(!name){
+        pane.innerHTML = '<div class="empty">Click a metric on the left.</div>';
+        return;
+      }
+      renderMetricFeederList(pane, name);
       return;
     }
-    if(!state.path){
-      pane.innerHTML = '<div class="empty">Click a component or metric on the left.</div>';
+    // Events tab
+    if(!state.events.path){
+      pane.innerHTML = '<div class="empty">Click a component on the left.</div>';
       return;
     }
-    var arr = state.path.split('/');
+    var arr = state.events.path.split('/');
     var node = findNode(arr);
     if(!node){
       pane.innerHTML = '<div class="empty">Unknown component.</div>';
@@ -547,9 +561,8 @@ PAGE_JS = """
     var parts = [];
     parts.push('<h2>'+escapeHtml(node.title)+' <span class="badge">'+node.count+'</span></h2>');
     parts.push('<div class="path">'+escapeHtml(pathTitle(arr))+'</div>');
-    parts.push(renderNodeGroup(node, state.path));
+    parts.push(renderNodeGroup(node, state.events.path));
     pane.innerHTML = parts.join('');
-
     wireEventListItems();
     qa('#pane-list .sub-summary').forEach(function(el){
       var header = el.querySelector('h3');
@@ -560,6 +573,49 @@ PAGE_JS = """
         selectPath(el.getAttribute('data-jump'));
       });
     });
+  }
+
+  function renderMetricFeederList(pane, name){
+    var m = ARCH.metrics[name];
+    if(!m){ pane.innerHTML = '<div class="empty">Unknown metric.</div>'; return; }
+    var parts = [];
+    parts.push('<h2>'+escapeHtml(m.name)+' <span class="badge">L'+m.level+'</span></h2>');
+    var pathBits = [];
+    if(m.category) pathBits.push(m.category);
+    if(m.parent) pathBits.push(m.parent);
+    if(pathBits.length) parts.push('<div class="path">'+escapeHtml(pathBits.join(' › '))+'</div>');
+    parts.push('<h4 style="margin:0.5rem 0 0.35rem;font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Feeder events ('+m.events.length+')<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
+    // Detect the "primary" feeder — a pseudo-event whose name pattern matches
+    // the metric (e.g. Frontend_Bound ↔ PERF_METRICS.FRONTEND_BOUND). This
+    // isn't self-reference, it's the raw counter the metric is normalizing.
+    var primary = primaryFeederFor(m.name, m.events);
+    parts.push('<ul class="event-list">');
+    m.events.forEach(function(ename){
+      var badge = (ename === primary)
+        ? ' <span class="primary-badge">primary</span>'
+        : '';
+      parts.push('<li data-ev="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+badge+'</li>');
+    });
+    parts.push('</ul>');
+    pane.innerHTML = parts.join('');
+    wireEventListItems();
+  }
+
+  function primaryFeederFor(metricName, eventNames){
+    // A metric like Frontend_Bound has PERF_METRICS.FRONTEND_BOUND in its
+    // feeder list. That's the "primary" reading — everything else in the
+    // formula is a normalizer (TOPDOWN.SLOTS) or sibling bucket. Match by
+    // upper-casing the metric name and comparing the suffix.
+    var target = metricName.toUpperCase();
+    for(var i = 0; i < eventNames.length; i++){
+      var ename = eventNames[i];
+      if(!ename.startsWith('PERF_METRICS.')) continue;
+      var tail = ename.slice('PERF_METRICS.'.length).replace(/_/g, '_');
+      if(tail === target || tail === target.replace(/_/g, '')) {
+        return ename;
+      }
+    }
+    return null;
   }
 
   // Distinguish single vs double click. Single-click just shows the item's
@@ -587,20 +643,30 @@ PAGE_JS = """
       var name = decodeURIComponent(li.getAttribute('data-ev'));
       bindNavClicks(
         li,
-        function(){ selectEvent(name); },   // single-click: just show detail
-        function(){ jumpToEvent(name); }    // double-click: switch to Events tab
+        // Single-click: on Events tab, this is the primary event selection;
+        // on Metrics tab, it's a preview that stays put.
+        function(){
+          if(state.tab === 'events') selectEvent(name);
+          else previewEvent(name);
+        },
+        // Double-click: only meaningful from the Metrics tab (jump to Events).
+        function(){
+          if(state.tab === 'events') selectEvent(name);
+          else jumpToEvent(name);
+        }
       );
     });
   }
 
   function jumpToEvent(name){
-    // Switch to the Events tab, highlight the event's uarch path, then
-    // select the event itself so the SVG box lights up and the detail pane
-    // populates.
+    // Switch to the Events tab and highlight the event's uarch path only
+    // when the event actually has a home in the arch-map. Pseudo-events
+    // (PERF_METRICS.*, TSC, RAPL) have no uarch home, so we just show
+    // their detail without switching tabs.
     if(!EVENT_INDEX) buildEventIndex();
     var entry = EVENT_INDEX && EVENT_INDEX[name];
-    setTab('events');
     if(entry){
+      setTab('events');
       selectPath(entry.path.join('/'));
       selectEvent(name);
       var el = q('[data-path="'+entry.path.join('/')+'"]');
@@ -609,15 +675,30 @@ PAGE_JS = """
         catch(e){}
       }
     } else if(ARCH.events[name]){
-      // Pseudo-event or something not in the uarch map: still show its detail.
-      state.eventName = name; state.metric = null; state.path = null;
-      renderList();
-      renderDetail();
+      // No uarch home — treat like a single-click preview.
+      previewEvent(name);
     }
   }
 
   function selectEvent(name){
-    state.eventName = name;
+    // Called from the Events tab when an event <li> is clicked or from
+    // jumpToEvent(). Records the event as the "current event on the
+    // Events tab" and also as the current detail subject.
+    state.events.eventName = name;
+    state.detail.kind = 'event';
+    state.detail.name = name;
+    qa('#view-events #pane-list li.selected').forEach(function(el){ el.classList.remove('selected'); });
+    var target = q('#pane-list li[data-ev="'+encodeURIComponent(name)+'"]');
+    if(target) target.classList.add('selected');
+    renderDetail();
+  }
+
+  function previewEvent(name){
+    // Show an event in the bottom detail pane WITHOUT changing tab or
+    // left-column selection. Used for single-click on feeder events from
+    // the Metrics tab, and for pseudo-event double-clicks.
+    state.detail.kind = 'event';
+    state.detail.name = name;
     qa('#pane-list li.selected').forEach(function(el){ el.classList.remove('selected'); });
     var target = q('#pane-list li[data-ev="'+encodeURIComponent(name)+'"]');
     if(target) target.classList.add('selected');
@@ -626,8 +707,11 @@ PAGE_JS = """
 
   // -------- Metrics tab: metric selection --------
   function selectMetric(name){
-    state.metric = name; state.eventName = null; state.path = null;
-    qa('.selected').forEach(function(el){ el.classList.remove('selected'); });
+    state.metrics.metric = name;
+    state.detail.kind = 'metric';
+    state.detail.name = name;
+    // Clear only the metrics-view highlights (leave the events SVG alone).
+    qa('#view-metrics .selected').forEach(function(el){ el.classList.remove('selected'); });
     var svgEl = q('[data-metric="'+cssEsc(name)+'"]');
     if(svgEl) svgEl.classList.add('selected');
     qa('#view-metrics li[data-metric="'+cssEsc(name)+'"]').forEach(function(el){
@@ -635,24 +719,28 @@ PAGE_JS = """
     });
     renderList();
     renderDetail();
-    // Scroll the tree node into view
     if(svgEl && svgEl.scrollIntoView){
       try { svgEl.scrollIntoView({block: 'center', behavior: 'smooth'}); } catch(e){}
     }
+  }
+
+  function previewMetric(name){
+    // Show a metric in the bottom detail pane WITHOUT changing tab.
+    state.detail.kind = 'metric';
+    state.detail.name = name;
+    renderDetail();
   }
 
   function cssEsc(s){ return String(s).replace(/"/g, '\\\\"'); }
 
   function renderDetail(){
     var pane = q('#pane-detail');
-    // Prefer eventName over metric — when both are set (e.g. user drills into
-    // a metric's feeder), the event is what they're currently looking at.
-    if(state.eventName){
-      renderEventDetail(pane, ARCH.events[state.eventName]);
+    if(state.detail.kind === 'event' && state.detail.name){
+      renderEventDetail(pane, ARCH.events[state.detail.name]);
       return;
     }
-    if(state.metric){
-      renderMetricDetail(pane, ARCH.metrics[state.metric]);
+    if(state.detail.kind === 'metric' && state.detail.name){
+      renderMetricDetail(pane, ARCH.metrics[state.detail.name]);
       return;
     }
     pane.innerHTML = '<div class="empty">Select an event or metric to see its full description.</div>';
@@ -772,14 +860,23 @@ PAGE_JS = """
     }
 
     if(m.events && m.events.length){
+      var primary = primaryFeederFor(m.name, m.events);
       parts.push('<div class="detail-section">');
       parts.push('<h4>Feeder events ('+m.events.length+')'
         +'<span class="click-hint">single-click: preview · double-click: jump</span></h4>');
       parts.push('<div class="feeders">');
       m.events.forEach(function(ename){
-        parts.push('<span class="feeder" data-jump-event="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+'</span>');
+        var cls = (ename === primary) ? 'feeder primary' : 'feeder';
+        var badge = (ename === primary) ? ' <span class="primary-badge">primary</span>' : '';
+        parts.push('<span class="'+cls+'" data-jump-event="'+encodeURIComponent(ename)+'">'+escapeHtml(ename)+badge+'</span>');
       });
-      parts.push('</div></div>');
+      parts.push('</div>');
+      if(primary){
+        parts.push('<div style="font-size:0.7rem;color:var(--muted);margin-top:0.35rem;">'
+          +'The <b>primary</b> feeder is the fixed-function counter this metric normalizes — '
+          +'it is not the metric feeding into itself; PERF_METRICS.* pseudo-events are distinct from the metric definitions.</div>');
+      }
+      parts.push('</div>');
     }
 
     if(m.group){
@@ -818,9 +915,7 @@ PAGE_JS = """
       var name = decodeURIComponent(el.getAttribute('data-jump-metric'));
       bindNavClicks(
         el,
-        // Single-click: show metric detail without switching tabs.
-        function(){ state.metric = name; state.eventName = null; renderDetail(); },
-        // Double-click: switch to Metrics tab and highlight in the tree.
+        function(){ previewMetric(name); },
         function(){ setTab('metrics'); selectMetric(name); }
       );
     });
@@ -831,9 +926,7 @@ PAGE_JS = """
       var name = decodeURIComponent(el.getAttribute('data-jump-event'));
       bindNavClicks(
         el,
-        // Single-click: replace bottom detail pane with the event, stay put.
-        function(){ state.eventName = name; renderDetail(); },
-        // Double-click: switch to Events tab and highlight on SVG.
+        function(){ previewEvent(name); },
         function(){ jumpToEvent(name); }
       );
     });
