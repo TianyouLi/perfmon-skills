@@ -3047,21 +3047,44 @@ def _build_diff(current: PlatformCatalog,
             cell_rollup[key] = counts_dict
 
     # -------- TMA subtree rollup --------
-    # For each TMA node (metric with hierarchy), aggregate its own status
-    # AND every descendant's. Used to show "+N ~M" on internal tree nodes
-    # so users can see where the change concentration is without expanding.
+    # For each TMA node, aggregate the diff status of its subtree's feeder
+    # events (distinct set, not multiplicity — so shared events like
+    # CPU_CLK_UNHALTED.THREAD don't get double-counted). Also include the
+    # metric's own status if changed, so a formula-only rewrite still
+    # surfaces on the tree box. Used to render "+N ~M" on tree nodes.
+    #
+    # Semantics: the number the user sees on a box matches the count of
+    # coloured badges they'd see in the top-right feeder list for that
+    # metric (plus the metric-itself changed marker when applicable).
     tma_rollup = {}   # metric name -> {new, changed, same, removed}
     if not skip_metrics:
         tree = TmaTree(current)
-        def _rollup_node(node):
-            agg = {"new": 0, "changed": 0, "same": 0, "removed": 0}
-            own = metrics_status.get(node.metric.name)
-            if own:
-                agg[own] += 1
+        def _collect_events(node):
+            evs = set(node.metric.event_names)
             for c in node.children:
-                child_agg = _rollup_node(c)
-                for k in agg:
-                    agg[k] += child_agg[k]
+                evs |= _collect_events(c)
+            return evs
+        def _rollup_node(node):
+            events_in_subtree = _collect_events(node)
+            agg = {"new": 0, "changed": 0, "same": 0, "removed": 0}
+            for ev in events_in_subtree:
+                st = events_status.get(ev)
+                if st in agg:
+                    agg[st] += 1
+            # Also account for the metric's own definition change (formula
+            # or level differs but feeders unchanged) — count it once as
+            # 'changed' or 'new' at the node itself.
+            own = metrics_status.get(node.metric.name)
+            if own == 'changed':
+                # Only add if there isn't already a signal from feeders,
+                # otherwise the user sees a number bigger than the badges.
+                if agg['new'] + agg['changed'] + agg['removed'] == 0:
+                    agg['changed'] += 1
+            elif own == 'new':
+                if agg['new'] + agg['changed'] + agg['removed'] == 0:
+                    agg['new'] += 1
+            for c in node.children:
+                _rollup_node(c)
             tma_rollup[node.metric.name] = agg
             return agg
         for root in tree.roots:
