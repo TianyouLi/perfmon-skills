@@ -843,19 +843,21 @@ PAGE_JS = """
         ' They are shown as unchanged.</span></span>';
     }
     var removedTip = '';
-    var hidden = (e.removed_renamed || 0) + (e.removed_unit_retired || 0) +
-                 (e.removed_denser_variants || 0);
+    var hidden = (e.removed_renamed || 0) + (e.removed_rename_partial || 0) +
+                 (e.removed_unit_retired || 0) + (e.removed_denser_variants || 0);
     if(hidden > 0){
       removedTip = '<span class="help-tip" tabindex="0">?<span class="tip">' +
         'Additionally, <b>' + hidden + ' events</b> present on the baseline ' +
         'do not appear on this platform, but are<br>' +
-        '&nbsp;• ' + (e.removed_renamed || 0) + ' events under a renamed unit ' +
-        '(same event, e.g. M2M→B2CMI)<br>' +
-        '&nbsp;• ' + (e.removed_unit_retired || 0) + ' events in units that were retired ' +
-        '(e.g. HBM controllers)<br>' +
-        '&nbsp;• ' + (e.removed_denser_variants || 0) + ' denser baseline variants ' +
+        '&nbsp;• <b>' + (e.removed_renamed || 0) + '</b> renamed (same event under a new Unit, ' +
+        'e.g. M2M→B2CMI)<br>' +
+        '&nbsp;• <b>' + (e.removed_rename_partial || 0) + '</b> under a renamed Unit but the specific ' +
+        'sub-event was cut (e.g. some M3UPI variants not carried into B2UPI)<br>' +
+        '&nbsp;• <b>' + (e.removed_unit_retired || 0) + '</b> in Units that were dropped entirely ' +
+        '(e.g. HBM controllers M2HBM/MCHBM, M2PCIe)<br>' +
+        '&nbsp;• <b>' + (e.removed_denser_variants || 0) + '</b> denser baseline variants ' +
         '(per-slice variants the current release consolidates).<br>' +
-        'These are filtered out to keep the highlight focused on real changes.' +
+        'These are filtered out so the headline count focuses on real semantic removals.' +
         '</span></span>';
     }
     var metricsPart = '';
@@ -3208,6 +3210,18 @@ def _build_diff(current: PlatformCatalog,
             continue
         base_bases_by_unit.setdefault(u, set()).add(_base(e.name))
 
+    # Bucket semantics after this pass:
+    #   renamed          — event exists under a new Unit name; direct match
+    #   unit_retired     — the whole Unit is gone (mapped to None, or the
+    #                      Unit isn't in the current arch-map at all)
+    #   rename_partial   — Unit was renamed but this specific sub-event was
+    #                      not carried over (e.g. UNC_M3UPI_TxL_CRD.VN0 has
+    #                      no basename twin under B2UPI)
+    #   denser_variants  — same Unit on both platforms; the specific
+    #                      variant was consolidated out
+    #   genuinely_gone   — everything else — a real removal on the current
+    #                      platform that isn't rename/retire noise
+    removed_buckets["rename_partial"] = []
     base_events_lookup = {e.name: e for e in baseline.events if not e.deprecated}
     for name in events_removed:
         e = base_events_lookup.get(name)
@@ -3221,7 +3235,7 @@ def _build_diff(current: PlatformCatalog,
                 if b in cur_bases_by_unit.get(target, set()):
                     removed_buckets["renamed"].append(name)
                 else:
-                    removed_buckets["unit_retired"].append(name)
+                    removed_buckets["rename_partial"].append(name)
         elif u and u not in cur_bases_by_unit:
             removed_buckets["unit_retired"].append(name)
         elif u and _base(name) not in cur_bases_by_unit.get(u, set()):
@@ -3319,6 +3333,7 @@ def _build_diff(current: PlatformCatalog,
             "new_renamed": len(new_buckets["renamed"]),
             "removed_total": len(events_removed),
             "removed_renamed": len(removed_buckets["renamed"]),
+            "removed_rename_partial": len(removed_buckets["rename_partial"]),
             "removed_unit_retired": len(removed_buckets["unit_retired"]),
             "removed_denser_variants": len(removed_buckets["denser_variants"]),
             "removed_genuinely_gone": len(removed_buckets["genuinely_gone"]),
